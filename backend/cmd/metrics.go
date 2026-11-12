@@ -11,12 +11,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-func startMetricsServer(ctx context.Context, port int, collector prometheus.Collector) *http.Server {
+func startMetricsServer(ctx context.Context, port int, collectors ...prometheus.Collector) *http.Server {
 	if port == 0 {
 		return nil
 	}
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(collector)
+	registry.MustRegister(collectors...)
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 	server := &http.Server{Addr: fmt.Sprintf(":%d", port), Handler: mux, ReadHeaderTimeout: 5 * time.Second}

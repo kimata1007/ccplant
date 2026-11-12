@@ -160,6 +160,9 @@ type SessionInfo struct {
 	AllocatedSessionID string             `json:"allocated_session_id,omitempty"`
 	UserID             string             `json:"user_id"`
 	Status             string             `json:"status"`
+	Scope              string             `json:"scope"`
+	TeamID             string             `json:"team_id"`
+	UpdatedAt          time.Time          `json:"updated_at"`
 	StartedAt          time.Time          `json:"started_at"`
 	Port               int                `json:"port"`
 	Tags               map[string]string  `json:"tags,omitempty"`
@@ -315,12 +318,22 @@ func (c *Client) Search(ctx context.Context, status string) (*SearchResponse, er
 
 // SearchWithTags lists and filters sessions with tag support
 func (c *Client) SearchWithTags(ctx context.Context, status string, tags map[string]string) (*SearchResponse, error) {
+	return c.SearchScoped(ctx, status, tags, "", "")
+}
+
+func (c *Client) SearchScoped(ctx context.Context, status string, tags map[string]string, scope, team string) (*SearchResponse, error) {
 	u, err := url.Parse(c.baseURL + "/search")
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse URL: %w", err)
 	}
 
 	q := u.Query()
+	if scope != "" {
+		q.Set("scope", scope)
+	}
+	if team != "" {
+		q.Set("team_id", team)
+	}
 	if status != "" {
 		q.Set("status", status)
 	}

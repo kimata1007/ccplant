@@ -27,6 +27,7 @@ import (
 	"github.com/takutakahashi/agentapi-proxy/internal/infrastructure/services"
 	"github.com/takutakahashi/agentapi-proxy/internal/usecases/ports/repositories"
 	sessionuc "github.com/takutakahashi/agentapi-proxy/internal/usecases/session"
+	"github.com/takutakahashi/agentapi-proxy/internal/usecases/task"
 	"github.com/takutakahashi/agentapi-proxy/pkg/auth"
 	"github.com/takutakahashi/agentapi-proxy/pkg/authzscope"
 	"github.com/takutakahashi/agentapi-proxy/pkg/executiontoken"
@@ -109,6 +110,7 @@ type sessionConfigurationOwnerProvider interface {
 
 // SessionController handles session management endpoints
 type SessionController struct {
+	taskQueue              *task.Queue
 	sessionManagerProvider SessionManagerProvider
 	sessionCreator         SessionCreator
 	validateTeamUC         *sessionuc.ValidateTeamAccessUseCase
@@ -334,6 +336,8 @@ func (c *SessionController) RegisterRoutes(e *echo.Echo) error {
 	return nil
 }
 
+func (c *SessionController) SetTaskQueue(q *task.Queue) { c.taskQueue = q }
+
 // StartSession handles POST /start requests to start a new agentapi server
 func (c *SessionController) StartSession(ctx echo.Context) error {
 	return telemetry.LoggedOperationErr(ctx.Request().Context(), "controllers.SessionController.StartSession", func(requestCtx context.Context) error {
@@ -354,18 +358,39 @@ func (c *SessionController) startSession(ctx echo.Context) error {
 	}
 
 	sessionID := uuid.New().String()
-	if claims, ok := ctx.Get("trigger_execution_claims").(executiontoken.ExecutionClaims); ok {
+	var startReq entities.StartRequest
+	claims, signed := ctx.Get("trigger_execution_claims").(executiontoken.ExecutionClaims)
+	if signed {
 		sessionID = claims.SessionID
-		if existing := c.getSessionManager().GetSession(sessionID); existing != nil {
+	}
+	if signed && claims.TaskID != "" {
+		if c.taskQueue == nil || dryRun || ctx.Request().Header.Get("Idempotency-Key") != claims.ExecutionID ||
+			claims.ExecutionID != task.ExecutionID(claims.TaskID, claims.TaskGeneration) {
+			return echo.NewHTTPError(http.StatusConflict, "invalid task execution")
+		}
+		requestCtx, cancel := context.WithTimeout(ctx.Request().Context(), task.StartTimeout)
+		defer cancel()
+		ctx.SetRequest(ctx.Request().WithContext(requestCtx))
+		record, err := c.taskQueue.Begin(requestCtx, claims.TaskID, sessionID, claims.TaskWorker, claims.TaskGeneration)
+		if err != nil {
+			return taskHTTPError(err)
+		}
+		if record.OwnerUserID != claims.UserID || record.Scope != claims.Scope || record.TeamID != claims.TeamID {
+			return echo.NewHTTPError(http.StatusForbidden, "task identity mismatch")
+		}
+		startReq = record.Spec.Spec.Start.Request()
+	} else {
+		if signed && c.getSessionManager().GetSession(sessionID) != nil {
 			return ctx.JSON(http.StatusOK, map[string]interface{}{"session_id": sessionID})
 		}
+		if err := ctx.Bind(&startReq); err != nil {
+			log.Printf("Failed to parse request body (using defaults): %v", err)
+		}
+		if c.taskQueue != nil {
+			delete(startReq.Tags, "task_id")
+		}
 	}
-
-	var startReq entities.StartRequest
-	if err := ctx.Bind(&startReq); err != nil {
-		log.Printf("Failed to parse request body (using defaults): %v", err)
-	}
-	if claims, ok := ctx.Get("trigger_execution_claims").(executiontoken.ExecutionClaims); ok {
+	if signed {
 		// Bind worker-triggered identity and ownership to the signed claims.
 		startReq.Scope = claims.Scope
 		startReq.TeamID = claims.TeamID
@@ -378,6 +403,9 @@ func (c *SessionController) startSession(ctx echo.Context) error {
 			if id != "" {
 				startReq.Tags[key] = id
 			}
+		}
+		if claims.TaskID != "" {
+			startReq.Tags["task_id"] = claims.TaskID
 		}
 		credentialSource := ""
 		if startReq.Params != nil {
@@ -695,6 +723,9 @@ func (c *SessionController) startSession(ctx echo.Context) error {
 	session, err := c.sessionCreator.CreateSession(ctx.Request().Context(), sessionID, startReq, userID, userRole, teams)
 	if err != nil {
 		c.revokeGitHubBrokerLeases(ctx.Request().Context(), sessionID)
+		if errors.Is(err, task.ErrWaitingCapacity) {
+			return echo.NewHTTPError(http.StatusTooManyRequests, "waiting for session capacity")
+		}
 		var quotaErr *sessionrunnercore.QuotaExceededError
 		if errors.As(err, &quotaErr) {
 			return ctx.JSON(http.StatusTooManyRequests, map[string]any{

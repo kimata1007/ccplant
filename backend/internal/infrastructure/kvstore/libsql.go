@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -39,6 +40,28 @@ func (s *LibSQLStore) validateValueMode(value []byte) error {
 }
 
 func NewLibSQLStore(ctx context.Context, databaseURL, authToken string) (*LibSQLStore, error) {
+	// File-backed replicas can contend briefly when writing reservations or
+	// releasing locks. Let SQLite wait instead of failing immediately with BUSY.
+	if strings.HasPrefix(databaseURL, "file:") {
+		dsn, err := url.Parse(databaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("parse SQLite database URL: %w", err)
+		}
+		params := dsn.Query()
+		hasTimeout := false
+		for _, pragma := range params["_pragma"] {
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(pragma)), "busy_timeout") {
+				hasTimeout = true
+				break
+			}
+		}
+		if !hasTimeout {
+			params.Add("_pragma", "busy_timeout(5000)")
+			dsn.RawQuery = params.Encode()
+			databaseURL = dsn.String()
+		}
+	}
+
 	opts := []libsql.Option{}
 	if authToken != "" {
 		opts = append(opts, libsql.WithAuthToken(authToken))

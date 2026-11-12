@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"github.com/prometheus/client_golang/prometheus"
 	"log"
 	"net/http"
 	"os"
@@ -131,6 +132,9 @@ func runProxy(cmd *cobra.Command, args []string) {
 			configData = config.DefaultConfig()
 		}
 	}
+	if err := configData.ValidateTaskQueue(); err != nil {
+		log.Fatal(err)
+	}
 	if err := validateServerRedis(configData); err != nil {
 		log.Fatal(err)
 	}
@@ -142,7 +146,7 @@ func runProxy(cmd *cobra.Command, args []string) {
 	configData = proxyServer.GetConfig()
 	serverCtx, cancelServer := context.WithCancel(context.Background())
 	defer cancelServer()
-	startMetricsServer(serverCtx, metricsPort, prommetrics.NewStatusCollector(
+	collectors := []prometheus.Collector{prommetrics.NewStatusCollector(
 		"agentapi_sessions",
 		"Current number of AgentAPI sessions by status.",
 		[]string{"creating", "starting", "running", "active", "stable", "suspending", "suspended", "resuming", "restoring", "unhealthy", "stopped", "error", "timeout", "unknown"},
@@ -153,7 +157,11 @@ func runProxy(cmd *cobra.Command, args []string) {
 			}
 			return counts, nil
 		},
-	))
+	)}
+	if metrics := proxyServer.TaskQueueMetrics(); metrics != nil {
+		collectors = append(collectors, metrics)
+	}
+	startMetricsServer(serverCtx, metricsPort, collectors...)
 
 	// Run the idempotent legacy→multi API token migration and load all named
 	// tokens into the auth service. Any migration conflict or bootstrap load

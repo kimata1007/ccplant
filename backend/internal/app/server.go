@@ -46,6 +46,7 @@ import (
 	portrepos "github.com/takutakahashi/agentapi-proxy/internal/usecases/ports/repositories"
 	serviceaccountuc "github.com/takutakahashi/agentapi-proxy/internal/usecases/service_account"
 	sessionuc "github.com/takutakahashi/agentapi-proxy/internal/usecases/session"
+	"github.com/takutakahashi/agentapi-proxy/internal/usecases/task"
 	"github.com/takutakahashi/agentapi-proxy/pkg/auth"
 	"github.com/takutakahashi/agentapi-proxy/pkg/codexauth"
 	"github.com/takutakahashi/agentapi-proxy/pkg/config"
@@ -1441,6 +1442,9 @@ func (s *Server) createSession(ctx context.Context, sessionID string, startReq e
 		return nil, fmt.Errorf("select authorized session route: %w", err)
 	}
 	if route == nil {
+		if startReq.Tags["task_id"] != "" && s.GetConfig().TaskQueue.Enabled {
+			return nil, task.ErrWaitingCapacity
+		}
 		return nil, fmt.Errorf("no authorized and healthy session route is available")
 	}
 	if explicitManagerID != "" && !authorizedRouteContainsManager(route, explicitManagerID) {

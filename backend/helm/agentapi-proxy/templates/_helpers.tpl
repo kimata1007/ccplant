@@ -221,3 +221,17 @@ scia-oauth
 {{- $secret := $todoist.secret | default dict }}
 {{- default (printf "%s-todoist" (include "agentapi-proxy.sciaName" .) | trunc 63 | trimSuffix "-") $secret.existingSecret }}
 {{- end }}
+
+{{- define "agentapi-proxy.taskQueueEnv" -}}
+{{- $queue := .Values.taskQueue | default dict }}
+{{- if (dig "enabled" false $queue) }}
+- name: AGENTAPI_TASK_QUEUE_ENABLED
+  value: "true"
+{{- range $name, $env := dict "maxStartingGlobal" "MAX_STARTING_GLOBAL" "maxStartingPerUser" "MAX_STARTING_PER_USER" "maxStartingPerTeam" "MAX_STARTING_PER_TEAM" "maxLiveSessionsPerUser" "MAX_LIVE_SESSIONS_PER_USER" "maxLiveSessionsPerTeam" "MAX_LIVE_SESSIONS_PER_TEAM" "maxPending" "MAX_PENDING" "retentionDays" "RETENTION_DAYS" "teamRetentionDays" "TEAM_RETENTION_DAYS" }}
+{{- if hasKey $queue $name }}
+- name: AGENTAPI_TASK_QUEUE_{{ $env }}
+  value: {{ index $queue $name | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

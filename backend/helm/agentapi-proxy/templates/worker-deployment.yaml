@@ -61,6 +61,7 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           env:
+            {{- include "agentapi-proxy.taskQueueEnv" . | nindent 12 }}
             {{- if (dig "enabled" false $openTelemetry) }}
             - name: POD_NAME
               valueFrom:

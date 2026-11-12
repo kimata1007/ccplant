@@ -271,6 +271,10 @@ func (m *SessionManager) Release(ctx context.Context, key, identity string) (boo
 }
 
 func (m *SessionManager) do(ctx context.Context, method, path string, input, output any) error {
+	return m.doWithWorker(ctx, method, path, "", input, output)
+}
+
+func (m *SessionManager) doWithWorker(ctx context.Context, method, path, worker string, input, output any) error {
 	var body io.Reader
 	if input != nil {
 		data, err := json.Marshal(input)
@@ -284,6 +288,9 @@ func (m *SessionManager) do(ctx context.Context, method, path string, input, out
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+m.token)
+	if worker != "" {
+		req.Header.Set("X-Task-Worker", worker)
+	}
 	if input != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
