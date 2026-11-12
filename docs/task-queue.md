@@ -109,3 +109,44 @@ gauges. Alert when the oldest wait exceeds your SLA, when
 `sum by (reason)(rate(tasks_failed_total[5m]))` rises. Use
 `task_claim_conflict_total`, `task_reconciliation_total`, and the wait/start
 histograms to distinguish contention, recoveries, and slow provisioning.
+
+## Run the queue on your computer with SQLite
+
+Task commands default to the server queue. Select SQLite with
+`--queue sqlite` or `CCPLANT_TASK_QUEUE=sqlite`. Keep the same API endpoint
+and `AGENTAPI_KEY` for the task commands and the worker. The SQLite file
+keeps separate queues for each endpoint and credential, so switching keys
+selects a different queue. The credential itself is kept out of the file.
+
+```sh
+export CCPLANT_TASK_QUEUE=sqlite
+# Set AGENTAPI_PROXY_ENDPOINT and AGENTAPI_KEY as for a normal ccplant session.
+ccplant submit repository-task.yaml
+ccplant list
+# Run this in a terminal to process the local queue.
+ccplant task worker
+# Use another terminal with the same configuration to attach or cancel.
+ccplant attach tsk_...
+```
+
+The database defaults to `ccplant/tasks.sqlite3` under your OS user configuration
+directory. Set `CCPLANT_TASK_SQLITE_PATH` or pass `--sqlite-path` on each task
+command to use a different file. The file contains task inputs and must have
+private file permissions. The same file can be reopened after a process or
+machine restart.
+
+Local submission, listing, inspection and cancellation work offline. The
+foreground worker needs the API to start and reconcile sessions. It uses the
+ordinary `/start` and `/search` endpoints, so this mode works with the server
+task queue disabled. Local tasks appear in the CLI for that SQLite queue.
+Sessions they start appear in ccplant as ordinary sessions.
+
+When the computer sleeps or shuts down, the local worker stops requesting new
+sessions. Start it again to process pending tasks within their original queue
+deadlines. Sessions already started on the server continue independently.
+When the server returns HTTP 429, the worker requeues the task and tries again
+after a delay. If it cannot connect, the task stays queued as
+`WAITING_FOR_API`. If the server may have accepted a request but the response
+was lost, the task shows `START_UNCERTAIN`. The worker looks for a matching
+session by its dispatch tag. If the API never exposes a match, the task stays
+in that state to avoid a duplicate session.

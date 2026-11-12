@@ -20,14 +20,23 @@ import (
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/takutakahashi/agentapi-proxy/internal/domain/entities"
+	"github.com/takutakahashi/agentapi-proxy/internal/usecases/task"
 	"github.com/takutakahashi/agentapi-proxy/pkg/client"
+	"github.com/takutakahashi/agentapi-proxy/pkg/utils"
 	"golang.org/x/term"
 )
 
-type taskCommand func(*cobra.Command, *client.Client, []string) error
+type taskCommand func(*cobra.Command, *taskCLIClient, []string) error
 
 func taskCLI(use, short string, args cobra.PositionalArgs, run taskCommand) *cobra.Command {
-	var endpoint string
+	return taskCLIWithQueue(use, short, args, "server", run)
+}
+
+func taskCLIWithQueue(use, short string, args cobra.PositionalArgs, defaultQueue string, run taskCommand) *cobra.Command {
+	var endpoint, queueMode, sqlitePath string
+	if configured := os.Getenv("CCPLANT_TASK_QUEUE"); configured != "" {
+		defaultQueue = configured
+	}
 	cmd := &cobra.Command{Use: use, Short: short, Args: args, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolved := endpoint
@@ -41,16 +50,41 @@ func taskCLI(use, short string, args cobra.PositionalArgs, run taskCommand) *cob
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			cmd.SetContext(ctx)
-			return run(cmd, client.NewClient(resolved, client.WithAPIKeyAuth(os.Getenv("AGENTAPI_KEY"))), args)
+			credential := os.Getenv("AGENTAPI_KEY")
+			options := []client.ClientOption{client.WithAPIKeyAuth(credential)}
+			switch queueMode {
+			case "server":
+				api := client.NewClient(resolved, options...)
+				return run(cmd, &taskCLIClient{Client: api, tasks: api}, args)
+			case "sqlite":
+				resolved, err := normalizeLocalTaskEndpoint(resolved)
+				if err != nil {
+					return err
+				}
+				httpClient := utils.NewHTTPClient(utils.HTTPClientConfig{Timeout: task.StartTimeout})
+				// A redirect must not replay a local worker's start request.
+				httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+				api := client.NewClient(resolved, append(options, client.WithHTTPClient(httpClient))...)
+				local, err := openLocalTaskQueue(ctx, sqlitePath, resolved, credential, api)
+				if err != nil {
+					return err
+				}
+				defer local.kv.Close()
+				return run(cmd, &taskCLIClient{Client: api, tasks: local, local: local}, args)
+			default:
+				return fmt.Errorf("unknown task queue %q (use server or sqlite)", queueMode)
+			}
 		}}
 	cmd.Flags().StringVar(&endpoint, "endpoint", "", "ccplant API endpoint")
+	cmd.Flags().StringVar(&queueMode, "queue", defaultQueue, "Task queue storage: server or sqlite")
+	cmd.Flags().StringVar(&sqlitePath, "sqlite-path", os.Getenv("CCPLANT_TASK_SQLITE_PATH"), "SQLite task database path")
 	return cmd
 }
 
 func TaskCommands() []*cobra.Command {
 	var submissionJSON bool
 	var key string
-	submit := taskCLI("submit <path.yaml>", "Submit a task for background session creation", cobra.ExactArgs(1), func(cmd *cobra.Command, api *client.Client, args []string) error {
+	submit := taskCLI("submit <path.yaml>", "Submit a task for background session creation", cobra.ExactArgs(1), func(cmd *cobra.Command, api *taskCLIClient, args []string) error {
 		file, err := os.Open(args[0])
 		if err != nil {
 			return err
@@ -68,7 +102,7 @@ func TaskCommands() []*cobra.Command {
 		if submissionKey == "" {
 			submissionKey = uuid.NewString()
 		}
-		result, err := api.SubmitTask(cmd.Context(), spec, submissionKey)
+		result, err := api.tasks.SubmitTask(cmd.Context(), spec, submissionKey)
 		if err != nil {
 			return fmt.Errorf("%w (retry with --idempotency-key %s)", err, submissionKey)
 		}
@@ -79,8 +113,8 @@ func TaskCommands() []*cobra.Command {
 
 	manage := &cobra.Command{Use: "task", Short: "Inspect and manage queued tasks"}
 	var showJSON bool
-	show := taskCLI("show <task-id>", "Show task state and its assigned session", cobra.ExactArgs(1), func(cmd *cobra.Command, api *client.Client, args []string) error {
-		result, err := api.ShowTask(cmd.Context(), args[0])
+	show := taskCLI("show <task-id>", "Show task state and its assigned session", cobra.ExactArgs(1), func(cmd *cobra.Command, api *taskCLIClient, args []string) error {
+		result, err := api.tasks.ShowTask(cmd.Context(), args[0])
 		if err != nil {
 			return err
 		}
@@ -96,24 +130,24 @@ func TaskCommands() []*cobra.Command {
 	show.Flags().BoolVar(&showJSON, "json", false, "Print JSON")
 
 	var force bool
-	cancel := taskCLI("cancel <task-id>", "Cancel a pending task", cobra.ExactArgs(1), func(cmd *cobra.Command, api *client.Client, args []string) error {
+	cancel := taskCLI("cancel <task-id>", "Cancel a pending task", cobra.ExactArgs(1), func(cmd *cobra.Command, api *taskCLIClient, args []string) error {
 		ctx := cmd.Context()
 		if !force {
-			result, err := api.CancelTask(ctx, args[0])
+			result, err := api.tasks.CancelTask(ctx, args[0])
 			if err != nil {
 				return err
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", result.State, taskSessionID(result), result.Reason)
 			return err
 		}
-		result, err := api.ShowTask(ctx, args[0])
+		result, err := api.tasks.ShowTask(ctx, args[0])
 		if err != nil {
 			return err
 		}
 		if result.SessionID == nil || result.SessionMissing {
 			return errors.New("task has no existing session to delete")
 		}
-		if _, err := findTaskSession(ctx, api, *result.SessionID, string(result.Scope), result.TeamID); err != nil {
+		if _, err := findTaskSession(ctx, api.Client, *result.SessionID, string(result.Scope), result.TeamID); err != nil {
 			return err
 		}
 		in, ok := cmd.InOrStdin().(*os.File)
@@ -130,7 +164,7 @@ func TaskCommands() []*cobra.Command {
 			return nil
 		}
 		if result.State.Pending() {
-			if _, err = api.CancelTask(ctx, args[0]); err != nil && !isTaskHTTP(err, http.StatusConflict) {
+			if _, err = api.tasks.CancelTask(ctx, args[0]); err != nil && !isTaskHTTP(err, http.StatusConflict) {
 				return err
 			}
 		}
@@ -139,17 +173,17 @@ func TaskCommands() []*cobra.Command {
 	})
 	cancel.Flags().BoolVar(&force, "force-session-stop", false, "Delete the existing session after two confirmations")
 
-	retry := taskCLI("retry <task-id>", "Submit a new task from a failed, cancelled or expired task", cobra.ExactArgs(1), func(cmd *cobra.Command, api *client.Client, args []string) error {
-		result, err := api.RetryTask(cmd.Context(), args[0], "")
+	retry := taskCLI("retry <task-id>", "Submit a new task from a failed, cancelled or expired task", cobra.ExactArgs(1), func(cmd *cobra.Command, api *taskCLIClient, args []string) error {
+		result, err := api.tasks.RetryTask(cmd.Context(), args[0], "")
 		if err != nil {
 			return err
 		}
 		return printSubmission(cmd.OutOrStdout(), result, false)
 	})
-	manage.AddCommand(show, cancel, retry)
+	manage.AddCommand(show, cancel, retry, newLocalTaskWorkerCommand())
 
 	var wait bool
-	send := taskCLI("send <task-id|session-id> <message>", "Send one message to an existing session", cobra.ExactArgs(2), func(cmd *cobra.Command, api *client.Client, args []string) error {
+	send := taskCLI("send <task-id|session-id> <message>", "Send one message to an existing session", cobra.ExactArgs(2), func(cmd *cobra.Command, api *taskCLIClient, args []string) error {
 		if strings.TrimSpace(args[1]) == "" || len(args[1]) > 128<<10 {
 			return errors.New("message must contain 1 to 128 KiB of text")
 		}
@@ -160,7 +194,7 @@ func TaskCommands() []*cobra.Command {
 		if session.Status == "suspended" {
 			return errors.New("session is suspended; resume it before sending")
 		}
-		return sendTaskMessage(cmd.Context(), api, session.SessionID, args[1])
+		return sendTaskMessage(cmd.Context(), api.Client, session.SessionID, args[1])
 	})
 	send.Flags().BoolVar(&wait, "wait", false, "Wait for the session to be ready before sending once")
 	return []*cobra.Command{submit, newTaskListCommand(), manage, newTaskAttachCommand(), send}
@@ -201,7 +235,7 @@ type taskListRow struct {
 func newTaskListCommand() *cobra.Command {
 	var scope, team, states string
 	var watch, asJSON bool
-	cmd := taskCLI("list", "List queued tasks and existing sessions", cobra.NoArgs, func(cmd *cobra.Command, api *client.Client, _ []string) error {
+	cmd := taskCLI("list", "List queued tasks and existing sessions", cobra.NoArgs, func(cmd *cobra.Command, api *taskCLIClient, _ []string) error {
 		ctx := cmd.Context()
 		query := make(url.Values)
 		if scope != "" && scope != "user" && scope != "team" {
@@ -222,7 +256,7 @@ func newTaskListCommand() *cobra.Command {
 		var previous string
 		var updates <-chan struct{}
 		if watch {
-			updates, _ = api.WatchTaskChanges(ctx, query)
+			updates, _ = api.tasks.WatchTaskChanges(ctx, query)
 		}
 		for {
 			rows, err := collectTaskRows(ctx, api, query, filters)
@@ -252,7 +286,7 @@ func newTaskListCommand() *cobra.Command {
 				}
 			case <-time.After(4 * time.Second):
 				if updates == nil {
-					updates, _ = api.WatchTaskChanges(ctx, query)
+					updates, _ = api.tasks.WatchTaskChanges(ctx, query)
 				}
 			}
 		}
@@ -265,13 +299,13 @@ func newTaskListCommand() *cobra.Command {
 	return cmd
 }
 
-func collectTaskRows(ctx context.Context, api *client.Client, query url.Values, filters []string) ([]taskListRow, error) {
+func collectTaskRows(ctx context.Context, api *taskCLIClient, query url.Values, filters []string) ([]taskListRow, error) {
 	query.Set("limit", "200")
 	query.Del("cursor")
 	items := map[string]entities.Task{}
 	rows := make([]taskListRow, 0)
 	for {
-		page, err := api.ListTasks(ctx, query)
+		page, err := api.tasks.ListTasks(ctx, query)
 		if isTaskHTTP(err, http.StatusNotFound) {
 			break
 		} // Older server or disabled queue.
@@ -287,16 +321,20 @@ func collectTaskRows(ctx context.Context, api *client.Client, query url.Values, 
 		query.Set("cursor", page.NextCursor)
 	}
 	query.Del("cursor")
-	sessions, err := api.SearchScoped(ctx, "", nil, query.Get("scope"), query.Get("team_id"))
-	if err != nil {
-		return nil, err
-	}
-	if query.Get("scope") == "" && query.Get("team_id") == "" {
-		teamSessions, err := api.SearchScoped(ctx, "", nil, "team", "")
+	var sessions client.SearchResponse
+	if api.local == nil {
+		response, err := api.SearchScoped(ctx, "", nil, query.Get("scope"), query.Get("team_id"))
 		if err != nil {
 			return nil, err
 		}
-		sessions.Sessions = append(sessions.Sessions, teamSessions.Sessions...)
+		sessions = *response
+		if query.Get("scope") == "" && query.Get("team_id") == "" {
+			teamSessions, err := api.SearchScoped(ctx, "", nil, "team", "")
+			if err != nil {
+				return nil, err
+			}
+			sessions.Sessions = append(sessions.Sessions, teamSessions.Sessions...)
+		}
 	}
 	bySession := map[string]entities.Task{}
 	for _, item := range items {
@@ -394,12 +432,12 @@ func findTaskSession(ctx context.Context, api *client.Client, id, scope, team st
 	return client.SessionInfo{}, &client.TaskAPIError{Status: http.StatusNotFound, Message: "session not found"}
 }
 
-func resolveTaskSession(ctx context.Context, api *client.Client, id string, wait bool, notice io.Writer) (client.SessionInfo, error) {
+func resolveTaskSession(ctx context.Context, api *taskCLIClient, id string, wait bool, notice io.Writer) (client.SessionInfo, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	if !strings.HasPrefix(id, "tsk_") {
 		for {
-			session, err := findTaskSession(ctx, api, id, "", "")
+			session, err := findTaskSession(ctx, api.Client, id, "", "")
 			if err != nil {
 				return client.SessionInfo{}, err
 			}
@@ -424,7 +462,7 @@ func resolveTaskSession(ctx context.Context, api *client.Client, id string, wait
 	waiting := false
 	backoff := time.Second
 	for {
-		record, err := api.ShowTask(ctx, id)
+		record, err := api.tasks.ShowTask(ctx, id)
 		if err != nil {
 			return client.SessionInfo{}, err
 		}
@@ -433,7 +471,7 @@ func resolveTaskSession(ctx context.Context, api *client.Client, id string, wait
 			if record.SessionMissing || record.SessionID == nil {
 				return client.SessionInfo{}, errors.New("session was removed")
 			}
-			return findTaskSession(ctx, api, *record.SessionID, string(record.Scope), record.TeamID)
+			return findTaskSession(ctx, api.Client, *record.SessionID, string(record.Scope), record.TeamID)
 		case entities.TaskFailed, entities.TaskCancelled, entities.TaskExpired:
 			return client.SessionInfo{}, fmt.Errorf("task %s: %s %s", id, record.State, record.Reason)
 		}
@@ -449,7 +487,7 @@ func resolveTaskSession(ctx context.Context, api *client.Client, id string, wait
 			if record.TeamID != "" {
 				query.Set("team_id", record.TeamID)
 			}
-			changes, _ = api.WatchTaskChanges(ctx, query)
+			changes, _ = api.tasks.WatchTaskChanges(ctx, query)
 		}
 		select {
 		case <-ctx.Done():

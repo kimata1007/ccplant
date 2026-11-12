@@ -16,6 +16,7 @@ type TaskRecord struct {
 	LeaseUntil      time.Time            `json:"lease_until,omitzero"`
 	RetryAfter      time.Time            `json:"retry_after,omitzero"`
 	Generation      int64                `json:"generation"`
+	DispatchID      string               `json:"dispatch_id,omitempty"`
 	Dispatched      bool                 `json:"dispatched,omitempty"`
 	Accepted        bool                 `json:"accepted,omitempty"`
 	Events          []entities.TaskEvent `json:"events"`

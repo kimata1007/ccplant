@@ -148,3 +148,16 @@ func (c *Client) WatchTaskChanges(ctx context.Context, query url.Values) (<-chan
 	}()
 	return events, failures
 }
+
+// StartLocalTaskSession uses the ordinary session API and returns the
+// server-assigned ID. The caller must reconcile any ambiguous result by tag.
+func (c *Client) StartLocalTaskSession(ctx context.Context, request entities.StartRequest) (string, error) {
+	var result StartResponse
+	if err := c.taskRequest(ctx, http.MethodPost, "/start", "", request, &result); err != nil {
+		return "", err
+	}
+	if result.SessionID == "" {
+		return "", fmt.Errorf("session creation response has no session ID")
+	}
+	return result.SessionID, nil
+}

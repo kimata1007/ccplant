@@ -418,22 +418,28 @@ func (s *LibSQLStore) Create(ctx context.Context, record Record) (Record, error)
 	if table == libSQLFallbackTable {
 		statement = fmt.Sprintf(`INSERT INTO %s
 	(kind, namespace, key, version, metadata, owner_scope, value, updated_at, %s)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, %s)`, table, columns, placeholders)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, %s) ON CONFLICT (kind, namespace, key) DO NOTHING`, table, columns, placeholders)
 		args = append([]any{record.Kind}, args...)
 	} else {
 		statement = fmt.Sprintf(`INSERT INTO %s
 	(namespace, key, version, metadata, owner_scope, value, updated_at, %s)
-	VALUES (?, ?, ?, ?, ?, ?, ?, %s)`, table, columns, placeholders)
+	VALUES (?, ?, ?, ?, ?, ?, ?, %s) ON CONFLICT (namespace, key) DO NOTHING`, table, columns, placeholders)
 	}
 	for _, value := range queryValues {
 		args = append(args, value)
 	}
-	_, err = s.db.ExecContext(ctx, statement, args...)
+	result, err := s.db.ExecContext(ctx, statement, args...)
 	if err != nil {
-		if _, getErr := s.Get(ctx, record.Kind, record.Namespace, record.Key); getErr == nil {
-			return Record{}, ErrConflict
-		}
 		return Record{}, fmt.Errorf("create libSQL record: %w", err)
+	}
+	// The conflicting row may be deleted immediately by another process.
+	// Use the result of the insert itself to identify the conflict.
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Record{}, fmt.Errorf("read libSQL create result: %w", err)
+	}
+	if affected == 0 {
+		return Record{}, ErrConflict
 	}
 	s.tableLocations.Store(libSQLLocationKey(record.Kind, record.Namespace, record.Key), table)
 	return record, nil

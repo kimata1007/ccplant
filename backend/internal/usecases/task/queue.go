@@ -25,6 +25,7 @@ var ErrState = errors.New("task is no longer in an eligible state")
 var ErrIdempotency = errors.New("idempotency key already used for another task definition")
 
 type SessionSnapshot struct {
+	ID     string
 	Status string
 }
 
@@ -43,6 +44,7 @@ func (s SessionSnapshot) Ready() bool {
 type Queue struct {
 	Repo              repo.TaskRepository
 	Metrics           *Metrics
+	Local             bool
 	Sessions          func(context.Context) (map[string]SessionSnapshot, error)
 	RecoverAllocation func(context.Context, *repo.TaskRecord) (SessionSnapshot, error)
 	Now               func() time.Time
@@ -168,7 +170,14 @@ func (q *Queue) Begin(ctx context.Context, id, sessionID, worker string, generat
 		if err := checkLease(t, worker, generation, now); err != nil {
 			return err
 		}
-		if t.State != entities.TaskClaimed || t.Dispatched || t.CancelRequested || t.SessionID == nil || *t.SessionID != sessionID {
+		if t.State != entities.TaskClaimed || t.Dispatched || t.CancelRequested {
+			return ErrState
+		}
+		if q.Local {
+			if sessionID != "" || t.DispatchID == "" {
+				return ErrState
+			}
+		} else if t.SessionID == nil || *t.SessionID != sessionID {
 			return ErrState
 		}
 		t.Dispatched, t.LeaseUntil = true, now.Add(Lease)
@@ -192,6 +201,18 @@ func (q *Queue) Heartbeat(ctx context.Context, id, worker string, generation int
 
 // Finalize accepts only the status of /start. Route status determines readiness.
 func (q *Queue) Finalize(ctx context.Context, id, worker string, generation int64, status int) (*repo.TaskRecord, error) {
+	return q.finalize(ctx, id, worker, generation, status, "", false)
+}
+
+// FinalizeLocalStart records the server-assigned ID returned by ordinary /start.
+func (q *Queue) FinalizeLocalStart(ctx context.Context, id, worker string, generation int64, status int, sessionID string, notSent bool) (*repo.TaskRecord, error) {
+	if !q.Local || (status >= 200 && status < 300 && sessionID == "") {
+		return nil, ErrState
+	}
+	return q.finalize(ctx, id, worker, generation, status, sessionID, notSent)
+}
+
+func (q *Queue) finalize(ctx context.Context, id, worker string, generation int64, status int, sessionID string, notSent bool) (*repo.TaskRecord, error) {
 	record, err := q.mutate(ctx, id, func(t *repo.TaskRecord, now time.Time) error {
 		if err := checkLease(t, worker, generation, now); err != nil {
 			return err
@@ -203,8 +224,11 @@ func (q *Queue) Finalize(ctx context.Context, id, worker string, generation int6
 		case status >= 200 && status < 300:
 			t.LeaseOwner, t.LeaseUntil = "", time.Time{}
 			t.Accepted = true
+			if sessionID != "" {
+				t.SessionID = &sessionID
+			}
 			change(t, now, worker, "allocated", entities.TaskStarting, "")
-		case status == 429:
+		case status == 429 || notSent:
 			t.LeaseOwner, t.LeaseUntil = "", time.Time{}
 			t.Dispatched = false
 			t.RetryAfter = now.Add(15 * time.Second)
@@ -212,15 +236,24 @@ func (q *Queue) Finalize(ctx context.Context, id, worker string, generation int6
 				t.SessionID = nil
 				change(t, now, worker, "cancelled", entities.TaskCancelled, "")
 			} else {
-				change(t, now, worker, "capacity", entities.TaskQueued, "WAITING_CAPACITY")
+				if notSent {
+					change(t, now, worker, "connection_unavailable", entities.TaskQueued, "WAITING_FOR_API")
+				} else {
+					change(t, now, worker, "capacity", entities.TaskQueued, "WAITING_CAPACITY")
+				}
 			}
 		case status >= 400 && status < 500 && status != 408 && status != 409:
 			t.SessionID = nil
 			change(t, now, worker, "failed", entities.TaskFailed, fmt.Sprintf("START_HTTP_%d", status))
 		default:
-			// The client can time out before the API finishes writing. Keep
-			// its reservation until the original dispatch lease has drained.
-			t.RetryAfter = t.LeaseUntil.Add(retryDelay(t.Generation))
+			if q.Local {
+				// SQLite mode never replays an ambiguous start. Begin
+				// reconciliation immediately when this worker is done.
+				t.LeaseOwner, t.LeaseUntil = "", time.Time{}
+			} else {
+				// The server may still be writing after the client times out.
+				t.RetryAfter = t.LeaseUntil.Add(retryDelay(t.Generation))
+			}
 			change(t, now, worker, "start_uncertain", entities.TaskStarting, "START_UNCERTAIN")
 		}
 		return nil
@@ -244,7 +277,7 @@ func taskSubject(t *repo.TaskRecord) string {
 
 func (q *Queue) Claim(ctx context.Context, worker string, limit int) ([]*repo.TaskRecord, error) {
 	var claimed []*repo.TaskRecord
-	err := q.Repo.SerializeClaim(ctx, func(ctx context.Context) error {
+	claim := func(ctx context.Context) error {
 		now := q.now()
 		items, err := q.Repo.List(ctx, repo.TaskFilter{Pending: true})
 		if err != nil {
@@ -253,9 +286,12 @@ func (q *Queue) Claim(ctx context.Context, worker string, limit int) ([]*repo.Ta
 		if len(items) == 0 {
 			return nil
 		}
-		sessions, err := q.Sessions(ctx)
-		if err != nil {
-			return err
+		var sessions map[string]SessionSnapshot
+		if q.Sessions != nil {
+			sessions, err = q.Sessions(ctx)
+			if err != nil {
+				return err
+			}
 		}
 		candidates := make([]*repo.TaskRecord, 0, len(items))
 		for _, item := range items {
@@ -266,9 +302,12 @@ func (q *Queue) Claim(ctx context.Context, worker string, limit int) ([]*repo.Ta
 			if item.LeaseUntil.After(now) {
 				continue
 			}
-			if !session.Ready() && !session.Failed() && item.SessionID != nil && (item.Dispatched || item.Accepted) && q.RecoverAllocation != nil {
+			if !session.Ready() && !session.Failed() && (q.Local || item.SessionID != nil) && (item.Dispatched || item.Accepted) && q.RecoverAllocation != nil {
 				recovered, recoveryErr := q.RecoverAllocation(ctx, item)
 				if recoveryErr != nil {
+					if q.Local && ctx.Err() == nil {
+						continue
+					}
 					return recoveryErr
 				}
 				if recovered.Status != "" {
@@ -276,6 +315,10 @@ func (q *Queue) Claim(ctx context.Context, worker string, limit int) ([]*repo.Ta
 				}
 			}
 			state, reason := item.State, item.Reason
+			assigned := q.Local && item.SessionID == nil && session.ID != ""
+			if assigned {
+				item.SessionID, item.Accepted = &session.ID, true
+			}
 			switch {
 			case (session.Status != "" || item.Accepted) && item.CancelRequested:
 				state, reason = entities.TaskCancelled, "SESSION_CREATED"
@@ -289,14 +332,24 @@ func (q *Queue) Claim(ctx context.Context, worker string, limit int) ([]*repo.Ta
 				}
 				state, reason = entities.TaskFailed, "SESSION_MISSING"
 			case session.Status != "":
-				// Allocated sessions are provisioned by the existing runner. Recheck on each claim.
-				continue
+				if !assigned {
+					// The runner is still provisioning this session.
+					continue
+				}
+				reason = ""
+			case q.Local && item.Dispatched:
+				// Ordinary /start assigns IDs on the server. Without a confirmed
+				// rejection, only reconcile by tag; a second POST could start twice.
+				if reason == "START_UNCERTAIN" || item.CancelRequested {
+					continue
+				}
+				reason = "START_UNCERTAIN"
 			case item.CancelRequested:
 				state, reason, item.SessionID = entities.TaskCancelled, "", nil
 			case !item.Dispatched && !item.ExpiresAt.After(now):
 				state, reason, item.SessionID = entities.TaskExpired, "QUEUE_DEADLINE_EXCEEDED", nil
 			}
-			if state != item.State {
+			if state != item.State || reason != item.Reason || assigned {
 				change(item, now, worker, "reconciled", state, reason)
 				if err := q.Repo.Update(ctx, item); err != nil {
 					if !errors.Is(err, kvstore.ErrConflict) {
@@ -343,7 +396,9 @@ func (q *Queue) Claim(ctx context.Context, worker string, limit int) ([]*repo.Ta
 					next = append(next, item)
 					continue
 				}
-				if item.SessionID == nil {
+				if q.Local {
+					item.DispatchID = uuid.NewString()
+				} else if item.SessionID == nil {
 					id := uuid.NewString()
 					item.SessionID = &id
 				}
@@ -370,7 +425,14 @@ func (q *Queue) Claim(ctx context.Context, worker string, limit int) ([]*repo.Ta
 			candidates = next
 		}
 		return nil
-	})
+	}
+	if q.Local {
+		// Local reconciliation only reads the remote API. Task record CAS
+		// prevents duplicate claims without holding a SQLite lock over HTTP.
+		err := claim(ctx)
+		return claimed, err
+	}
+	err := q.Repo.SerializeClaim(ctx, claim)
 	return claimed, err
 }
 

@@ -25,7 +25,7 @@ func newTaskAttachCommand() *cobra.Command {
 	var follow, noInput, plain bool
 	var since, tail int
 	var uiURL string
-	cmd := taskCLI("attach <task-id|session-id>", "Read and continue an existing session conversation", cobra.ExactArgs(1), func(cmd *cobra.Command, api *client.Client, args []string) error {
+	cmd := taskCLI("attach <task-id|session-id>", "Read and continue an existing session conversation", cobra.ExactArgs(1), func(cmd *cobra.Command, api *taskCLIClient, args []string) error {
 		if since < 0 || tail < 0 {
 			return errors.New("--since and --tail must be nonnegative")
 		}
@@ -40,7 +40,7 @@ func newTaskAttachCommand() *cobra.Command {
 		outFile, terminalOutput := out.(*os.File)
 		interactive := follow && !noInput && terminalInput && terminalOutput && term.IsTerminal(int(in.Fd())) && term.IsTerminal(int(outFile.Fd()))
 		if interactive && !plain {
-			return runAttachTUI(ctx, api, args[0], session, since, tail, uiURL, in, out)
+			return runAttachTUI(ctx, api.Client, args[0], session, since, tail, uiURL, in, out)
 		}
 		fmt.Fprintf(out, "Session: %s  Scope: %s  Status: %s\n", session.SessionID, session.Scope, session.Status)
 		if session.Status == "suspended" {
@@ -64,7 +64,7 @@ func newTaskAttachCommand() *cobra.Command {
 		history := attachHistory{seen: make(map[string]string), since: since, tail: tail}
 		var updates <-chan struct{}
 		if follow {
-			updates = watchAttachedSession(ctx, api, session.SessionID)
+			updates = watchAttachedSession(ctx, api.Client, session.SessionID)
 		}
 		// Establish the event stream before the snapshot when the provider
 		// supports it. Canonical polling also covers unavailable event streams.
@@ -184,7 +184,7 @@ func newTaskAttachCommand() *cobra.Command {
 						draft, draftSize = nil, 0
 					}
 					if strings.TrimSpace(line) != "" && len(line) <= 128<<10 {
-						if err := sendTaskMessage(ctx, api, session.SessionID, line); err != nil {
+						if err := sendTaskMessage(ctx, api.Client, session.SessionID, line); err != nil {
 							fmt.Fprintln(out, err)
 						}
 					}

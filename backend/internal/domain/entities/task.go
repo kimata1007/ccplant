@@ -13,6 +13,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const LocalTaskTag = "ccplant_local_task_dispatch"
+
 const TaskBodyLimit = 256 << 10
 
 type TaskState string
@@ -138,7 +140,7 @@ func (s *TaskSpec) Validate() error {
 	}
 	for key, value := range start.Tags {
 		switch key {
-		case "task_id", "schedule_id", "webhook_id", "slackbot_id":
+		case "task_id", "schedule_id", "webhook_id", "slackbot_id", LocalTaskTag:
 			return errors.New("reserved session origin tag")
 		}
 		if key == "" || len(key) > 128 || len(value) > 512 {
