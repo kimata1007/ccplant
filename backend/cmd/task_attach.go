@@ -36,31 +36,18 @@ func newTaskAttachCommand() *cobra.Command {
 			return err
 		}
 		out := cmd.OutOrStdout()
+		in, terminalInput := cmd.InOrStdin().(*os.File)
+		outFile, terminalOutput := out.(*os.File)
+		interactive := follow && !noInput && terminalInput && terminalOutput && term.IsTerminal(int(in.Fd())) && term.IsTerminal(int(outFile.Fd()))
+		if interactive && !plain {
+			return runAttachTUI(ctx, api, args[0], session, since, tail, uiURL, in, out)
+		}
 		fmt.Fprintf(out, "Session: %s  Scope: %s  Status: %s\n", session.SessionID, session.Scope, session.Status)
 		if session.Status == "suspended" {
 			fmt.Fprintln(out, "Session suspended. Use /resume to resume it explicitly.")
 		}
-		in, terminalInput := cmd.InOrStdin().(*os.File)
-		outFile, terminalOutput := out.(*os.File)
-		interactive := follow && !noInput && terminalInput && terminalOutput && term.IsTerminal(int(in.Fd())) && term.IsTerminal(int(outFile.Fd()))
 		var readLine func() (string, error)
-		if interactive && !plain {
-			state, err := term.MakeRaw(int(in.Fd()))
-			if err != nil {
-				return fmt.Errorf("open terminal: %w", err)
-			}
-			defer term.Restore(int(in.Fd()), state)
-			screen := term.NewTerminal(struct {
-				io.Reader
-				io.Writer
-			}{in, out}, "> ")
-			if width, height, err := term.GetSize(int(outFile.Fd())); err == nil {
-				_ = screen.SetSize(width, height)
-			}
-			screen.SetBracketedPasteMode(true)
-			defer screen.SetBracketedPasteMode(false)
-			readLine, out = screen.ReadLine, screen
-		} else if interactive {
+		if interactive {
 			scanner := bufio.NewScanner(in)
 			scanner.Buffer(make([]byte, 4096), 128<<10)
 			readLine = func() (string, error) {
@@ -124,12 +111,8 @@ func newTaskAttachCommand() *cobra.Command {
 					case <-readNext:
 					}
 					line, err := readLine()
-					if err != nil && !errors.Is(err, term.ErrPasteIndicator) {
+					if err != nil {
 						return
-					}
-					// Pasting inserts text without interpreting slash commands.
-					if errors.Is(err, term.ErrPasteIndicator) && strings.HasPrefix(line, "/") {
-						line = " " + line
 					}
 					select {
 					case lineCh <- line:

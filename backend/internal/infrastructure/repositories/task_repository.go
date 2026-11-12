@@ -8,6 +8,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/takutakahashi/agentapi-proxy/internal/domain/entities"
 	"github.com/takutakahashi/agentapi-proxy/internal/infrastructure/kvstore"
@@ -151,5 +152,7 @@ func (r *TaskRepository) Delete(ctx context.Context, task *port.TaskRecord) erro
 }
 
 func (r *TaskRepository) SerializeClaim(ctx context.Context, fn func(context.Context) error) error {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
 	return kvstore.WithRecordLock(ctx, r.store, kvstore.Record{Kind: kvstore.KindSecret, Namespace: r.namespace, Key: "task-claim"}, fn)
 }

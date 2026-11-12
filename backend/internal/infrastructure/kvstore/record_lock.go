@@ -72,20 +72,18 @@ func acquireRecordLock(ctx context.Context, store Store, target Record) (Record,
 
 		existing, err := store.Get(ctx, KindConfigMap, target.Namespace, name)
 		switch {
-		case errors.Is(err, ErrNotFound):
-			continue
-		case err != nil:
-			return Record{}, "", fmt.Errorf("read replication lock for %s/%s: %w", target.Kind, target.Key, err)
-		}
-		expiresAt, err := recordLockExpiry(existing)
-		if err != nil {
-			return Record{}, "", fmt.Errorf("decode replication lock %s: %w", name, err)
-		}
-		if !expiresAt.After(now) {
-			if err := store.Delete(ctx, existing.Kind, existing.Namespace, existing.Key, existing.Version); err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrConflict) {
-				return Record{}, "", fmt.Errorf("reclaim replication lock %s: %w", name, err)
+		case err == nil:
+			expiresAt, err := recordLockExpiry(existing)
+			if err != nil {
+				return Record{}, "", fmt.Errorf("decode replication lock %s: %w", name, err)
 			}
-			continue
+			if !expiresAt.After(now) {
+				if err := store.Delete(ctx, existing.Kind, existing.Namespace, existing.Key, existing.Version); err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrConflict) {
+					return Record{}, "", fmt.Errorf("reclaim replication lock %s: %w", name, err)
+				}
+			}
+		case !errors.Is(err, ErrNotFound):
+			return Record{}, "", fmt.Errorf("read replication lock for %s/%s: %w", target.Kind, target.Key, err)
 		}
 
 		timer := time.NewTimer(recordLockPoll)

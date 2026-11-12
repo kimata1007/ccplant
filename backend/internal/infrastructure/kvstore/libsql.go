@@ -2,7 +2,9 @@ package kvstore
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -393,6 +395,13 @@ func (s *LibSQLStore) Create(ctx context.Context, record Record) (Record, error)
 		}
 	}
 	record.Version = 1
+	if record.Kind == KindConfigMap && record.Labels[recordLockLabel] == "true" {
+		// Recreating a lease must change its CAS version. A stale delete
+		// against the expired lease must not delete its successor.
+		var generation [8]byte
+		rand.Read(generation[:])
+		record.Version = int64(binary.BigEndian.Uint64(generation[:])>>2) + 2
+	}
 	metadata, err := marshalRecordMetadata(record.Labels)
 	if err != nil {
 		return Record{}, err
@@ -405,16 +414,16 @@ func (s *LibSQLStore) Create(ctx context.Context, record Record) (Record, error)
 	columns := strings.Join(libSQLQueryColumns, ", ")
 	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(libSQLQueryColumns)), ", ")
 	var statement string
-	args := []any{record.Namespace, record.Key, metadata, record.OwnerScope, record.Value, time.Now().UTC().Format(time.RFC3339Nano)}
+	args := []any{record.Namespace, record.Key, record.Version, metadata, record.OwnerScope, record.Value, time.Now().UTC().Format(time.RFC3339Nano)}
 	if table == libSQLFallbackTable {
 		statement = fmt.Sprintf(`INSERT INTO %s
 	(kind, namespace, key, version, metadata, owner_scope, value, updated_at, %s)
-	VALUES (?, ?, ?, 1, ?, ?, ?, ?, %s)`, table, columns, placeholders)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, %s)`, table, columns, placeholders)
 		args = append([]any{record.Kind}, args...)
 	} else {
 		statement = fmt.Sprintf(`INSERT INTO %s
 	(namespace, key, version, metadata, owner_scope, value, updated_at, %s)
-	VALUES (?, ?, 1, ?, ?, ?, ?, %s)`, table, columns, placeholders)
+	VALUES (?, ?, ?, ?, ?, ?, ?, %s)`, table, columns, placeholders)
 	}
 	for _, value := range queryValues {
 		args = append(args, value)
@@ -529,6 +538,9 @@ SELECT '%s' AS table_name, version, metadata, owner_scope, value FROM %s WHERE k
 	statement := fmt.Sprintf(`SELECT version, metadata, owner_scope, value FROM %s WHERE %s`, table, where)
 	err = s.db.QueryRowContext(ctx, statement, args...).Scan(&record.Version, &metadata, &record.OwnerScope, &record.Value)
 	if errors.Is(err, sql.ErrNoRows) {
+		// Another API replica may have removed a cached record. A stale
+		// location would also cause future Create calls to report a conflict.
+		s.tableLocations.CompareAndDelete(locationKey, table)
 		return Record{}, ErrNotFound
 	}
 	if err != nil {

@@ -26,8 +26,10 @@ has its own task and session IDs.
 
 Use `attach --follow=false` for a history snapshot, `--no-input` to follow
 without sending, or `--plain` for line input. `--since N` skips the first N
-messages and `--tail N` limits the initial snapshot. In the editor,
-`/multiline` starts a draft, `/send` submits it, and `/cancel-input` clears it.
+messages and `--tail N` limits the initial snapshot. The terminal interface
+shows the Session and connection status, a scrollable transcript, and a
+multiline editor. Enter sends, Ctrl+J inserts a line break, and Ctrl+C clears
+the draft. In plain mode, `/multiline` starts a draft and `/send` submits it.
 `/detach` or Ctrl+D disconnects the CLI. `/resume` requires confirmation.
 Set `CCPLANT_UI_URL` for `/open`.
 
