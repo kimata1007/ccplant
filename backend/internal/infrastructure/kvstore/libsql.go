@@ -621,6 +621,9 @@ func (s *LibSQLStore) Scan(ctx context.Context, query ScanQuery) ([]Record, erro
 }
 
 func (s *LibSQLStore) list(ctx context.Context, query Query) ([]Record, error) {
+	if query.Unshared {
+		return s.listOnce(ctx, query)
+	}
 	key := string(query.Kind) + "\x00" + query.Namespace + "\x00" + query.KeyPrefix + "\x00" + query.LabelSelector
 	value, err, _ := s.listGroup.Do(key, func() (any, error) {
 		return s.listOnce(ctx, query)

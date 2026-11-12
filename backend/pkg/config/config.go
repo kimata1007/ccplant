@@ -616,15 +616,7 @@ type SessionCountConfig struct {
 
 // Config represents the proxy configuration
 type TaskQueueConfig struct {
-	Enabled            bool `json:"enabled" mapstructure:"enabled"`
-	MaxStartingGlobal  int  `json:"max_starting_global" mapstructure:"max_starting_global"`
-	MaxStartingPerUser int  `json:"max_starting_per_user" mapstructure:"max_starting_per_user"`
-	MaxStartingPerTeam int  `json:"max_starting_per_team" mapstructure:"max_starting_per_team"`
-	MaxLivePerUser     int  `json:"max_live_sessions_per_user" mapstructure:"max_live_sessions_per_user"`
-	MaxLivePerTeam     int  `json:"max_live_sessions_per_team" mapstructure:"max_live_sessions_per_team"`
-	MaxPending         int  `json:"max_pending" mapstructure:"max_pending"`
-	RetentionDays      int  `json:"retention_days" mapstructure:"retention_days"`
-	TeamRetentionDays  int  `json:"team_retention_days" mapstructure:"team_retention_days"`
+	Enabled bool `json:"enabled" mapstructure:"enabled"`
 }
 
 type Config struct {
@@ -1458,22 +1450,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("kubernetes_session.github_secret_name", "")
 	v.SetDefault("task_queue.enabled", false)
 	_ = v.BindEnv("task_queue.enabled", "AGENTAPI_TASK_QUEUE_ENABLED")
-	v.SetDefault("task_queue.max_starting_global", 10)
-	_ = v.BindEnv("task_queue.max_starting_global", "AGENTAPI_TASK_QUEUE_MAX_STARTING_GLOBAL")
-	v.SetDefault("task_queue.max_starting_per_user", 2)
-	_ = v.BindEnv("task_queue.max_starting_per_user", "AGENTAPI_TASK_QUEUE_MAX_STARTING_PER_USER")
-	v.SetDefault("task_queue.max_starting_per_team", 2)
-	_ = v.BindEnv("task_queue.max_starting_per_team", "AGENTAPI_TASK_QUEUE_MAX_STARTING_PER_TEAM")
-	v.SetDefault("task_queue.max_live_sessions_per_user", 10)
-	_ = v.BindEnv("task_queue.max_live_sessions_per_user", "AGENTAPI_TASK_QUEUE_MAX_LIVE_SESSIONS_PER_USER")
-	v.SetDefault("task_queue.max_live_sessions_per_team", 10)
-	_ = v.BindEnv("task_queue.max_live_sessions_per_team", "AGENTAPI_TASK_QUEUE_MAX_LIVE_SESSIONS_PER_TEAM")
-	v.SetDefault("task_queue.max_pending", 2000)
-	_ = v.BindEnv("task_queue.max_pending", "AGENTAPI_TASK_QUEUE_MAX_PENDING")
-	v.SetDefault("task_queue.retention_days", 90)
-	_ = v.BindEnv("task_queue.retention_days", "AGENTAPI_TASK_QUEUE_RETENTION_DAYS")
-	v.SetDefault("task_queue.team_retention_days", 90)
-	_ = v.BindEnv("task_queue.team_retention_days", "AGENTAPI_TASK_QUEUE_TEAM_RETENTION_DAYS")
 	v.SetDefault("worker.control_api_url", "")
 	v.SetDefault("worker.control_api_token", "")
 	v.SetDefault("worker.session_api_url", "")

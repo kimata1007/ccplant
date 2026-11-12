@@ -38,7 +38,7 @@ func (s *Server) taskSessionSnapshot(ctx context.Context) (map[string]task.Sessi
 			if route.DeletionRequestID != "" {
 				status = "deleting"
 			}
-			result[route.SessionID] = task.SessionSnapshot{Status: status, Owner: route.UserID, Team: route.TeamID, TaskID: route.Tags["task_id"]}
+			result[route.SessionID] = task.SessionSnapshot{Status: status}
 		}
 	}
 	var sessions []entities.Session
@@ -61,7 +61,7 @@ func (s *Server) taskSessionSnapshot(ctx context.Context) (map[string]task.Sessi
 		if existing, ok := result[id]; ok && existing.Ready() {
 			continue
 		}
-		result[id] = task.SessionSnapshot{Status: session.Status(), Owner: session.UserID(), Team: session.TeamID(), TaskID: session.Tags()["task_id"]}
+		result[id] = task.SessionSnapshot{Status: session.Status()}
 	}
 	return result, nil
 }
@@ -89,7 +89,7 @@ func (s *Server) recoverTaskAllocation(ctx context.Context, t *repo.TaskRecord) 
 		if err == nil && a.Status == runner.AllocationFailed {
 			status = "error"
 		}
-		return task.SessionSnapshot{Status: status, Owner: t.OwnerUserID, Team: t.TeamID, TaskID: t.ID}, nil
+		return task.SessionSnapshot{Status: status}, nil
 	}
 	if errors.Is(err, runner.ErrNotFound) {
 		return task.SessionSnapshot{}, nil
@@ -122,7 +122,7 @@ func (s *Server) recoverTaskAllocation(ctx context.Context, t *repo.TaskRecord) 
 	}); err != nil {
 		return task.SessionSnapshot{}, err
 	}
-	return task.SessionSnapshot{Status: status, Owner: t.OwnerUserID, Team: t.TeamID, TaskID: t.ID}, nil
+	return task.SessionSnapshot{Status: status}, nil
 }
 
 // TaskQueueMetrics is nil when the feature is disabled.

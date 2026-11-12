@@ -16,14 +16,13 @@ import (
 	"github.com/takutakahashi/agentapi-proxy/internal/infrastructure/repositories"
 	"github.com/takutakahashi/agentapi-proxy/internal/usecases/task"
 	"github.com/takutakahashi/agentapi-proxy/pkg/auth"
-	"github.com/takutakahashi/agentapi-proxy/pkg/config"
 )
 
 func TestTaskScopeAndIdempotency(t *testing.T) {
 	store, err := kvstore.NewLibSQLStore(t.Context(), "file:"+filepath.Join(t.TempDir(), "task.db"), "")
 	require.NoError(t, err)
 	defer store.Close()
-	tc := TaskController{Queue: &task.Queue{Repo: repositories.NewTaskRepository(store, "default"), Config: config.TaskQueueConfig{MaxPending: 10},
+	tc := TaskController{Queue: &task.Queue{Repo: repositories.NewTaskRepository(store, "default"),
 		Sessions: func(context.Context) (map[string]task.SessionSnapshot, error) { return nil, nil }}}
 	e := echo.New()
 	call := func(handler echo.HandlerFunc, method, path, id, body, principal, team string) (int, *httptest.ResponseRecorder) {

@@ -293,7 +293,7 @@ func NewRouter(e *echo.Echo, server *Server) *Router {
 	var workerControlController *controllers.WorkerControlController
 	var taskController *controllers.TaskController
 	if cfg := server.GetConfig(); cfg != nil && cfg.TaskQueue.Enabled && cfg.Worker.ExecutionTokenSigningKey != "" && cfg.Worker.ControlAPIToken != "" {
-		queue := &task.Queue{Repo: repositories.NewTaskRepository(server.GetApplicationKVStore(), server.namespace), Config: cfg.TaskQueue, Sessions: server.taskSessionSnapshot, RecoverAllocation: server.recoverTaskAllocation}
+		queue := &task.Queue{Repo: repositories.NewTaskRepository(server.GetApplicationKVStore(), server.namespace), Sessions: server.taskSessionSnapshot, RecoverAllocation: server.recoverTaskAllocation}
 		queue.Metrics = task.NewMetrics(queue.Repo)
 		taskController = &controllers.TaskController{Queue: queue, SigningKey: cfg.Worker.ExecutionTokenSigningKey}
 		sessionController.SetTaskQueue(queue)

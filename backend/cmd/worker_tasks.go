@@ -10,10 +10,10 @@ import (
 	"github.com/takutakahashi/agentapi-proxy/internal/infrastructure/controlapi"
 )
 
-func runTaskWorker(ctx context.Context, api *controlapi.SessionManager, limit int) {
+func runTaskWorker(ctx context.Context, api *controlapi.SessionManager) {
 	worker := uuid.NewString()
-	// Poll even at zero capacity so expired and allocated tasks can reconcile.
-	limit = max(1, min(100, limit))
+	// Bound in-flight HTTP requests per worker. Session admission is handled by /start.
+	const limit = 10
 	tick := time.NewTicker(2 * time.Second)
 	defer tick.Stop()
 	done := make(chan struct{}, limit)

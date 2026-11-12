@@ -42,8 +42,6 @@ func taskHTTPError(err error) error {
 		return echo.NewHTTPError(http.StatusNotFound, "task not found")
 	case errors.Is(err, task.ErrState), errors.Is(err, task.ErrIdempotency), errors.Is(err, kvstore.ErrConflict):
 		return echo.NewHTTPError(http.StatusConflict, err.Error())
-	case errors.Is(err, task.ErrQueueFull):
-		return echo.NewHTTPError(http.StatusTooManyRequests, "QUOTA_EXCEEDED: retry when the task queue has capacity")
 	default:
 		return echo.NewHTTPError(http.StatusServiceUnavailable, "task queue storage unavailable").SetInternal(err)
 	}

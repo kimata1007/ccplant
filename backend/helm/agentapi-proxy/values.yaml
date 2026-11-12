@@ -240,20 +240,12 @@ cloudRun:
 # Deprecated API aliases retained for upgrades using older values files.
 replicaCount: 1
 
-# Background controllers run in a dedicated process. Workload settings and
-# controller settings intentionally live under this key rather than the proxy.
 # Opt in on the API and background worker together.
 taskQueue:
   enabled: false
-  maxStartingGlobal: 10
-  maxStartingPerUser: 2
-  maxStartingPerTeam: 2
-  maxLiveSessionsPerUser: 10
-  maxLiveSessionsPerTeam: 10
-  maxPending: 2000
-  retentionDays: 90
-  teamRetentionDays: 90
 
+# Background controllers run in a dedicated process. Workload settings and
+# controller settings intentionally live under this key rather than the proxy.
 worker:
   enabled: false
   replicaCount: 1

@@ -35,6 +35,8 @@ type Record struct {
 }
 
 type Query struct {
+	// Unshared prevents a quota check from joining an older in-flight read.
+	Unshared      bool
 	Kind          Kind
 	Namespace     string
 	LabelSelector string

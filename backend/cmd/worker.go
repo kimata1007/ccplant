@@ -91,7 +91,7 @@ func runWorkers(_ *cobra.Command, _ []string) error {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			runTaskWorker(ctx, remote, cfg.TaskQueue.MaxStartingGlobal)
+			runTaskWorker(ctx, remote)
 		}()
 	}
 	var scheduleWorker *remoteScheduleWorker

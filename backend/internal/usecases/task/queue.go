@@ -15,22 +15,17 @@ import (
 	"github.com/takutakahashi/agentapi-proxy/internal/domain/entities"
 	"github.com/takutakahashi/agentapi-proxy/internal/infrastructure/kvstore"
 	repo "github.com/takutakahashi/agentapi-proxy/internal/usecases/ports/repositories"
-	"github.com/takutakahashi/agentapi-proxy/pkg/config"
 )
 
 const Lease = 3 * time.Minute
 const StartTimeout = 140 * time.Second
 
 var ErrWaitingCapacity = errors.New("no authorized session capacity is currently available")
-var ErrQueueFull = errors.New("task queue is full")
 var ErrState = errors.New("task is no longer in an eligible state")
 var ErrIdempotency = errors.New("idempotency key already used for another task definition")
 
 type SessionSnapshot struct {
 	Status string
-	Owner  string
-	Team   string
-	TaskID string
 }
 
 func (s SessionSnapshot) Failed() bool {
@@ -45,15 +40,9 @@ func (s SessionSnapshot) Ready() bool {
 	return false
 }
 
-// Suspended sessions retain storage and continue to occupy a task live slot.
-func (s SessionSnapshot) Live() bool {
-	return s.Status != "" && !s.Failed() && s.Status != "terminated" && s.Status != "deleted"
-}
-
 type Queue struct {
 	Repo              repo.TaskRepository
 	Metrics           *Metrics
-	Config            config.TaskQueueConfig
 	Sessions          func(context.Context) (map[string]SessionSnapshot, error)
 	RecoverAllocation func(context.Context, *repo.TaskRecord) (SessionSnapshot, error)
 	Now               func() time.Time
@@ -94,36 +83,31 @@ func (q *Queue) Submit(ctx context.Context, spec entities.TaskSpec, owner, key s
 		record.ID = hashedID(owner, key)
 	}
 	change(record, now, owner, "submitted", entities.TaskQueued, "")
-	err = q.Repo.SerializeClaim(ctx, func(ctx context.Context) error {
-		if key != "" {
-			existing, err := q.Repo.Get(ctx, record.ID)
-			if err == nil {
-				if existing.OwnerUserID != owner || existing.Fingerprint != record.Fingerprint {
-					return ErrIdempotency
-				}
-				record = existing
-				return nil
+	for attempt := 0; attempt < 2; attempt++ {
+		err = q.Repo.Create(ctx, record)
+		if err == nil {
+			if q.Metrics != nil {
+				q.Metrics.submitted.Inc()
 			}
-			if !errors.Is(err, kvstore.ErrNotFound) {
-				return err
-			}
+			return record, nil
 		}
-		items, err := q.Repo.List(ctx, repo.TaskFilter{Pending: true})
+		if key == "" || !errors.Is(err, kvstore.ErrConflict) {
+			return nil, err
+		}
+		existing, err := q.Repo.Get(ctx, record.ID)
+		if errors.Is(err, kvstore.ErrNotFound) {
+			// Another replica may have pruned the record after Create saw it.
+			continue
+		}
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if len(items) >= q.Config.MaxPending {
-			return ErrQueueFull
+		if existing.OwnerUserID != owner || existing.Fingerprint != record.Fingerprint {
+			return nil, ErrIdempotency
 		}
-		if err := q.Repo.Create(ctx, record); err != nil {
-			return err
-		}
-		if q.Metrics != nil {
-			q.Metrics.submitted.Inc()
-		}
-		return nil
-	})
-	return record, err
+		return existing, nil
+	}
+	return nil, kvstore.ErrConflict
 }
 
 func change(t *repo.TaskRecord, now time.Time, actor, event string, state entities.TaskState, reason string) {
@@ -273,31 +257,13 @@ func (q *Queue) Claim(ctx context.Context, worker string, limit int) ([]*repo.Ta
 		if err != nil {
 			return err
 		}
-		live, starting := map[string]int{}, map[string]int{}
-		totalStarting := 0
-		for _, session := range sessions {
-			if session.TaskID == "" || !session.Live() {
-				continue
-			}
-			subject := "user:" + session.Owner
-			if session.Team != "" {
-				subject = "team:" + session.Team
-			}
-			live[subject]++
-		}
 		candidates := make([]*repo.TaskRecord, 0, len(items))
 		for _, item := range items {
-			subject := taskSubject(item)
 			var session SessionSnapshot
 			if item.SessionID != nil {
 				session = sessions[*item.SessionID]
 			}
 			if item.LeaseUntil.After(now) {
-				totalStarting++
-				starting[subject]++
-				if !session.Live() {
-					live[subject]++
-				}
 				continue
 			}
 			if !session.Ready() && !session.Failed() && item.SessionID != nil && (item.Dispatched || item.Accepted) && q.RecoverAllocation != nil {
@@ -307,9 +273,6 @@ func (q *Queue) Claim(ctx context.Context, worker string, limit int) ([]*repo.Ta
 				}
 				if recovered.Status != "" {
 					session = recovered
-				}
-				if _, counted := sessions[*item.SessionID]; !counted && session.Live() {
-					live[subject]++
 				}
 			}
 			state, reason := item.State, item.Reason
@@ -322,7 +285,6 @@ func (q *Queue) Claim(ctx context.Context, worker string, limit int) ([]*repo.Ta
 				state, reason = entities.TaskReady, ""
 			case item.Accepted && session.Status == "":
 				if now.Sub(item.UpdatedAt) < 30*time.Second {
-					live[subject]++
 					continue
 				}
 				state, reason = entities.TaskFailed, "SESSION_MISSING"
@@ -355,14 +317,6 @@ func (q *Queue) Claim(ctx context.Context, worker string, limit int) ([]*repo.Ta
 				candidates = append(candidates, item)
 			}
 		}
-		if totalStarting >= q.Config.MaxStartingGlobal {
-			for _, item := range candidates {
-				if err := q.waitForCapacity(ctx, item, now, worker); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
 		// Age the priority so a steady stream of higher priority tasks cannot
 		// starve older work. Rotate between subjects within a claim batch.
 		sort.SliceStable(candidates, func(i, j int) bool {
@@ -377,24 +331,14 @@ func (q *Queue) Claim(ctx context.Context, worker string, limit int) ([]*repo.Ta
 			}
 			return a.ID < b.ID
 		})
-		for len(candidates) > 0 && totalStarting < q.Config.MaxStartingGlobal && len(claimed) < limit {
+		for len(candidates) > 0 && len(claimed) < limit {
 			used := map[string]bool{}
 			next := candidates[:0]
 			for _, item := range candidates {
-				if totalStarting >= q.Config.MaxStartingGlobal || len(claimed) >= limit {
+				if len(claimed) >= limit {
 					break
 				}
 				subject := taskSubject(item)
-				startLimit, liveLimit := q.Config.MaxStartingPerUser, q.Config.MaxLivePerUser
-				if item.Scope == entities.ScopeTeam {
-					startLimit, liveLimit = q.Config.MaxStartingPerTeam, q.Config.MaxLivePerTeam
-				}
-				if starting[subject] >= startLimit || live[subject] >= liveLimit {
-					if err := q.waitForCapacity(ctx, item, now, worker); err != nil {
-						return err
-					}
-					continue
-				}
 				if used[subject] {
 					next = append(next, item)
 					continue
@@ -422,9 +366,6 @@ func (q *Queue) Claim(ctx context.Context, worker string, limit int) ([]*repo.Ta
 				}
 				claimed = append(claimed, item)
 				used[subject] = true
-				starting[subject]++
-				live[subject]++
-				totalStarting++
 			}
 			candidates = next
 		}
@@ -433,17 +374,7 @@ func (q *Queue) Claim(ctx context.Context, worker string, limit int) ([]*repo.Ta
 	return claimed, err
 }
 
-func (q *Queue) waitForCapacity(ctx context.Context, item *repo.TaskRecord, now time.Time, worker string) error {
-	if item.State != entities.TaskQueued || item.Reason == "WAITING_CAPACITY" {
-		return nil
-	}
-	change(item, now, worker, "capacity", item.State, "WAITING_CAPACITY")
-	err := q.Repo.Update(ctx, item)
-	if errors.Is(err, kvstore.ErrConflict) {
-		return nil
-	}
-	return err
-}
+const taskHistoryDays = 90
 
 func (q *Queue) Prune(ctx context.Context) error {
 	items, err := q.Repo.List(ctx, repo.TaskFilter{States: []entities.TaskState{entities.TaskReady, entities.TaskCancelled, entities.TaskFailed, entities.TaskExpired}})
@@ -452,11 +383,7 @@ func (q *Queue) Prune(ctx context.Context) error {
 	}
 	now := q.now()
 	for _, item := range items {
-		days := q.Config.RetentionDays
-		if item.Scope == entities.ScopeTeam {
-			days = q.Config.TeamRetentionDays
-		}
-		if item.FinishedAt != nil && now.After(item.FinishedAt.AddDate(0, 0, days)) {
+		if item.FinishedAt != nil && now.After(item.FinishedAt.AddDate(0, 0, taskHistoryDays)) {
 			if err := q.Repo.Delete(ctx, item); err != nil && !errors.Is(err, kvstore.ErrConflict) && !errors.Is(err, kvstore.ErrNotFound) {
 				return err
 			}

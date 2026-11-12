@@ -66,9 +66,6 @@
           "409": {
             "description": "Idempotency conflict"
           },
-          "429": {
-            "description": "Task queue is full"
-          },
           "503": {
             "description": "Task queue unavailable"
           }
@@ -336,9 +333,6 @@
           },
           "409": {
             "description": "Idempotency conflict"
-          },
-          "429": {
-            "description": "Task queue is full"
           },
           "503": {
             "description": "Task queue unavailable"

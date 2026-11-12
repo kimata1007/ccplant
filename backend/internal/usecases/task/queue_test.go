@@ -2,6 +2,7 @@ package task_test
 
 import (
 	"context"
+	"net/http"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -13,7 +14,6 @@ import (
 	"github.com/takutakahashi/agentapi-proxy/internal/infrastructure/repositories"
 	port "github.com/takutakahashi/agentapi-proxy/internal/usecases/ports/repositories"
 	"github.com/takutakahashi/agentapi-proxy/internal/usecases/task"
-	"github.com/takutakahashi/agentapi-proxy/pkg/config"
 )
 
 const yamlTask = `apiVersion: ccplant.io/v1alpha1
@@ -38,9 +38,7 @@ func newQueue(t *testing.T, path string, now *time.Time, sessions map[string]tas
 	store, err := kvstore.NewLibSQLStore(context.Background(), "file:"+path, "")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
-	return &task.Queue{Repo: repositories.NewTaskRepository(store, "test"), Config: config.TaskQueueConfig{
-		MaxStartingGlobal: 2, MaxStartingPerUser: 1, MaxStartingPerTeam: 1, MaxLivePerUser: 3, MaxLivePerTeam: 3, MaxPending: 1000, RetentionDays: 90, TeamRetentionDays: 90,
-	}, Now: func() time.Time { return *now }, Sessions: func(context.Context) (map[string]task.SessionSnapshot, error) { return sessions, nil }}
+	return &task.Queue{Repo: repositories.NewTaskRepository(store, "test"), Now: func() time.Time { return *now }, Sessions: func(context.Context) (map[string]task.SessionSnapshot, error) { return sessions, nil }}
 }
 
 func TestDurableSubmissionAndParallelClaims(t *testing.T) {
@@ -80,9 +78,12 @@ func TestDurableSubmissionAndParallelClaims(t *testing.T) {
 	require.NoError(t, errs[0])
 	require.NoError(t, errs[1])
 	claims := append(results[0], results[1]...)
-	require.Len(t, claims, 2)
-	require.NotEqual(t, claims[0].OwnerUserID, claims[1].OwnerUserID)
-	require.NotEqual(t, *claims[0].SessionID, *claims[1].SessionID)
+	require.Len(t, claims, 3)
+	ids := make(map[string]bool)
+	for _, claim := range claims {
+		require.False(t, ids[claim.ID], "each task should be claimed once")
+		ids[claim.ID] = true
+	}
 	visible, err := api2.Repo.List(ctx, port.TaskFilter{Owner: "alice"})
 	require.NoError(t, err)
 	require.Len(t, visible, 2)
@@ -114,12 +115,12 @@ func TestRecoverLostStartAndCancellationRace(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, claims)
 
-	sessions[id] = task.SessionSnapshot{Status: "active", TaskID: submitted.ID, Owner: "owner"}
+	sessions[id] = task.SessionSnapshot{Status: "active"}
 	now = now.Add(task.Lease + time.Minute)
 	claims, err = q.Claim(ctx, "worker2", 1)
 	require.NoError(t, err)
 	require.Empty(t, claims)
-	ready, err := q.Repo.Get(ctx, claim.ID)
+	ready, err := q.Repo.Get(ctx, submitted.ID)
 	require.NoError(t, err)
 	require.Equal(t, entities.TaskReady, ready.State)
 	require.Equal(t, id, *ready.SessionID)
@@ -136,7 +137,7 @@ func TestRecoverLostStartAndCancellationRace(t *testing.T) {
 	cancelled, err := q.Cancel(ctx, second.ID, "owner")
 	require.NoError(t, err)
 	require.True(t, cancelled.CancelRequested)
-	sessions[id] = task.SessionSnapshot{Status: "creating", TaskID: second.ID, Owner: "owner"}
+	sessions[id] = task.SessionSnapshot{Status: "creating"}
 	_, err = q.Finalize(ctx, second.ID, "worker2", claim.Generation, 200)
 	require.NoError(t, err)
 	_, err = q.Claim(ctx, "worker3", 1)
@@ -147,20 +148,41 @@ func TestRecoverLostStartAndCancellationRace(t *testing.T) {
 	require.Equal(t, id, *cancelled.SessionID)
 }
 
-func TestZeroCapacityAndExpiry(t *testing.T) {
+func TestTaskRetriesWhenSessionQuotaIsFull(t *testing.T) {
 	ctx := t.Context()
 	now := time.Now().UTC()
 	q := newQueue(t, filepath.Join(t.TempDir(), "queue.db"), &now, map[string]task.SessionSnapshot{})
-	q.Config.MaxStartingGlobal = 0
 	spec, err := entities.DecodeTaskSpec([]byte(yamlTask), true)
 	require.NoError(t, err)
 	submitted, err := q.Submit(ctx, spec, "owner", "", nil, nil)
 	require.NoError(t, err)
 	claims, err := q.Claim(ctx, "worker1", 1)
 	require.NoError(t, err)
+	require.Len(t, claims, 1)
+	claim := claims[0]
+	_, err = q.Begin(ctx, claim.ID, *claim.SessionID, "worker1", claim.Generation)
+	require.NoError(t, err)
+	waiting, err := q.Finalize(ctx, claim.ID, "worker1", claim.Generation, http.StatusTooManyRequests)
+	require.NoError(t, err)
+	require.Equal(t, entities.TaskQueued, waiting.State)
+	require.Equal(t, "WAITING_CAPACITY", waiting.Reason)
+
+	claims, err = q.Claim(ctx, "worker2", 1)
+	require.NoError(t, err)
 	require.Empty(t, claims)
+	now = now.Add(16 * time.Second)
+	claims, err = q.Claim(ctx, "worker2", 1)
+	require.NoError(t, err)
+	require.Len(t, claims, 1)
+	require.Equal(t, submitted.ID, claims[0].ID)
+	require.Equal(t, claim.SessionID, claims[0].SessionID)
+
+	_, err = q.Begin(ctx, claims[0].ID, *claims[0].SessionID, "worker2", claims[0].Generation)
+	require.NoError(t, err)
+	_, err = q.Finalize(ctx, claims[0].ID, "worker2", claims[0].Generation, http.StatusTooManyRequests)
+	require.NoError(t, err)
 	now = now.Add(25 * time.Hour)
-	claims, err = q.Claim(ctx, "worker1", 1)
+	claims, err = q.Claim(ctx, "worker2", 1)
 	require.NoError(t, err)
 	require.Empty(t, claims)
 	item, err := q.Repo.Get(ctx, submitted.ID)

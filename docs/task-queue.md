@@ -76,17 +76,17 @@ message is stored as task input, so keep credentials out of prompts and tags.
 4. Submit a canary as a user and as a team. Verify queued visibility, repository
    checkout, shared CLI and browser history, suspend, detach, and reattach.
    Restart a Worker while provisioning and verify that the original Task
-   resolves to one Session ID before increasing concurrency.
+   resolves to one Session ID.
 
-Defaults allow 10 concurrent start requests, two per user or team, 10 live
-Task Sessions per user or team, and 2,000 pending tasks. Starting and live
-limits can be set to zero to pause admissions. Suspended sessions count toward
-the Task live limit. Existing pool quotas still govern placement.
-Terminal Task records and their events are retained for 90 days by default,
-with independent user and team settings. Session storage follows existing
-Session policies.
+The queue accepts submissions regardless of the number of queued tasks or
+active Sessions. The existing Session Pool binding quota applies to all
+Session starts, including those from the queue. A task that cannot start
+because the pool is full returns to the queue and retries when capacity is
+available, subject to its own queue deadline.
 
-To pause new starts, set `maxStartingGlobal: 0` and restart the API replicas.
+Finished task records and their events are kept for 90 days. Session storage
+follows the existing Session policies.
+
 To disable the API and Worker integration, turn off the feature on both roles.
 Persisted records remain available when the feature is reenabled.
 
@@ -94,8 +94,7 @@ Persisted records remain available when the feature is reenabled.
 
 - Queue grows with no claims: check that the Worker is running and that its
   control endpoint and signing credentials match the API.
-- `WAITING_CAPACITY`: check the global and scope limits, existing live Sessions,
-  and capacity in the resolved Session Pool.
+- `WAITING_CAPACITY`: check the binding quota and available capacity in the resolved Session Pool.
 - `START_UNCERTAIN`: check the recorded Session ID, API logs, and runner
   allocation. The queue waits for the prior lease before trying another
   dispatch with the same Session ID.

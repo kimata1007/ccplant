@@ -36,6 +36,6 @@ type TaskRepository interface {
 	List(context.Context, TaskFilter) ([]*TaskRecord, error)
 	Update(context.Context, *TaskRecord) error
 	Delete(context.Context, *TaskRecord) error
-	// SerializeClaim protects the capacity check and reservation across API replicas.
+	// SerializeClaim coordinates task recovery and claims across API replicas.
 	SerializeClaim(context.Context, func(context.Context) error) error
 }
