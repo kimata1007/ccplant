@@ -134,6 +134,7 @@ spec:
               protocol: TCP
             {{- end }}
           env:
+            {{- include "agentapi-proxy.taskQueueEnv" . | nindent 12 }}
             - {name: AGENTAPI_VERSION, value: {{ .Chart.AppVersion | quote }}}
             - name: HOME
               value: "/home/agentapi"

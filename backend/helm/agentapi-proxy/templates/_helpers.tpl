@@ -221,3 +221,11 @@ scia-oauth
 {{- $secret := $todoist.secret | default dict }}
 {{- default (printf "%s-todoist" (include "agentapi-proxy.sciaName" .) | trunc 63 | trimSuffix "-") $secret.existingSecret }}
 {{- end }}
+
+{{- define "agentapi-proxy.taskQueueEnv" -}}
+{{- $queue := .Values.taskQueue | default dict }}
+{{- if (dig "enabled" false $queue) }}
+- name: AGENTAPI_TASK_QUEUE_ENABLED
+  value: "true"
+{{- end }}
+{{- end }}

@@ -11,6 +11,7 @@ import { getACPServerEnabled } from '../../types/settings'
 import { useSessionsStatusStream } from '../hooks/useSessionsStatusStream'
 import { formatDate, formatRelativeTime } from '../../utils/timeUtils'
 import { truncateText } from '../../utils/textUtils'
+import { SessionTaskQueue } from './SessionTaskQueue'
 import { useTeamScope } from '../../contexts/TeamScopeContext'
 
 function createAgentStatusFromSession(session: Pick<Session, 'status' | 'updated_at'>): AgentStatus {
@@ -590,6 +591,9 @@ export default function SessionListView({ tagFilters, onSessionsUpdate, creating
 
   return (
     <div className="space-y-4">
+      {!isTeamScopeLoading && (
+        <SessionTaskQueue key={selectedTeam ?? 'user'} client={agentAPI} team={selectedTeam} sessions={sessions} refreshSessions={fetchSessions} />
+      )}
       {/* フローティング一括操作バー */}
       <div className={`fixed bottom-8 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-5 py-3 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 rounded-full shadow-2xl transition-all duration-300 ${selectedSessions.size > 0 ? 'translate-y-0 opacity-100' : 'translate-y-24 opacity-0 pointer-events-none'}`}>
         <span className="text-sm font-semibold tabular-nums whitespace-nowrap">{selectedSessions.size}件選択中</span>
@@ -1056,6 +1060,7 @@ export default function SessionListView({ tagFilters, onSessionsUpdate, creating
                         {/* セッション情報 */}
                         <div className="flex flex-col sm:flex-row sm:items-center text-xs text-gray-500 dark:text-gray-400 space-y-1 sm:space-y-0 sm:space-x-4 mb-3">
                           <span>#{session.session_id.substring(0, 8)}</span>
+                          {session.tags?.task_id && <span title={session.tags.task_id}>Task {session.tags.task_id}</span>}
                           <div className="flex items-center space-x-2 sm:space-x-4">
                             <span>開始: {formatDate(session.started_at)} ({formatRelativeTime(session.started_at)})</span>
                             {session.updated_at && (

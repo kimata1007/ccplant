@@ -615,7 +615,12 @@ type SessionCountConfig struct {
 }
 
 // Config represents the proxy configuration
+type TaskQueueConfig struct {
+	Enabled bool `json:"enabled" mapstructure:"enabled"`
+}
+
 type Config struct {
+	TaskQueue TaskQueueConfig `json:"task_queue" mapstructure:"task_queue"`
 	// BinaryPath is the ccplant executable used by generated hooks and child processes.
 	BinaryPath string `json:"binary_path" mapstructure:"binary_path"`
 	// Auth represents authentication configuration
@@ -1443,6 +1448,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("kubernetes_session.network_filter_init_memory_request", "32Mi")
 	v.SetDefault("kubernetes_session.network_filter_init_memory_limit", "64Mi")
 	v.SetDefault("kubernetes_session.github_secret_name", "")
+	v.SetDefault("task_queue.enabled", false)
+	_ = v.BindEnv("task_queue.enabled", "AGENTAPI_TASK_QUEUE_ENABLED")
 	v.SetDefault("worker.control_api_url", "")
 	v.SetDefault("worker.control_api_token", "")
 	v.SetDefault("worker.session_api_url", "")

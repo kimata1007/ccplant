@@ -39,6 +39,21 @@ spec:
               cpu: {{ $api.resources.limits.cpu | quote }}
               memory: {{ $api.resources.limits.memory | quote }}
           env:
+            {{- include "agentapi-proxy.taskQueueEnv" . | nindent 12 }}
+            {{- if (dig "enabled" false (.Values.taskQueue | default dict)) }}
+            {{- $taskWorkerToken := dig "workerControl" "tokenSecretRef" (dict) $api }}
+            {{- $taskSigningKey := dig "workerControl" "executionTokenSigningKeySecretRef" (dict) $api }}
+            - name: AGENTAPI_WORKER_CONTROL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "api.workerControl.tokenSecretRef.name is required for Task Queue" $taskWorkerToken.name | quote }}
+                  key: {{ $taskWorkerToken.key | default "token" | quote }}
+            - name: AGENTAPI_EXECUTION_TOKEN_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "api.workerControl.executionTokenSigningKeySecretRef.name is required for Task Queue" $taskSigningKey.name | quote }}
+                  key: {{ $taskSigningKey.key | default "execution-token-signing-key" | quote }}
+            {{- end }}
             - {name: AGENTAPI_VERSION, value: {{ .Chart.AppVersion | quote }}}
             - {name: AGENTAPI_KV_STORE_NAMESPACE, value: {{ $kv.namespace | quote }}}
             - {name: AGENTAPI_KV_STORE_BACKEND, value: {{ $kv.backend | quote }}}

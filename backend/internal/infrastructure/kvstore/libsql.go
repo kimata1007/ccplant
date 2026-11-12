@@ -2,10 +2,13 @@ package kvstore
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -39,6 +42,28 @@ func (s *LibSQLStore) validateValueMode(value []byte) error {
 }
 
 func NewLibSQLStore(ctx context.Context, databaseURL, authToken string) (*LibSQLStore, error) {
+	// File-backed replicas can contend briefly when writing reservations or
+	// releasing locks. Let SQLite wait instead of failing immediately with BUSY.
+	if strings.HasPrefix(databaseURL, "file:") {
+		dsn, err := url.Parse(databaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("parse SQLite database URL: %w", err)
+		}
+		params := dsn.Query()
+		hasTimeout := false
+		for _, pragma := range params["_pragma"] {
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(pragma)), "busy_timeout") {
+				hasTimeout = true
+				break
+			}
+		}
+		if !hasTimeout {
+			params.Add("_pragma", "busy_timeout(5000)")
+			dsn.RawQuery = params.Encode()
+			databaseURL = dsn.String()
+		}
+	}
+
 	opts := []libsql.Option{}
 	if authToken != "" {
 		opts = append(opts, libsql.WithAuthToken(authToken))
@@ -370,6 +395,13 @@ func (s *LibSQLStore) Create(ctx context.Context, record Record) (Record, error)
 		}
 	}
 	record.Version = 1
+	if record.Kind == KindConfigMap && record.Labels[recordLockLabel] == "true" {
+		// Recreating a lease must change its CAS version. A stale delete
+		// against the expired lease must not delete its successor.
+		var generation [8]byte
+		rand.Read(generation[:])
+		record.Version = int64(binary.BigEndian.Uint64(generation[:])>>2) + 2
+	}
 	metadata, err := marshalRecordMetadata(record.Labels)
 	if err != nil {
 		return Record{}, err
@@ -382,26 +414,32 @@ func (s *LibSQLStore) Create(ctx context.Context, record Record) (Record, error)
 	columns := strings.Join(libSQLQueryColumns, ", ")
 	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(libSQLQueryColumns)), ", ")
 	var statement string
-	args := []any{record.Namespace, record.Key, metadata, record.OwnerScope, record.Value, time.Now().UTC().Format(time.RFC3339Nano)}
+	args := []any{record.Namespace, record.Key, record.Version, metadata, record.OwnerScope, record.Value, time.Now().UTC().Format(time.RFC3339Nano)}
 	if table == libSQLFallbackTable {
 		statement = fmt.Sprintf(`INSERT INTO %s
 	(kind, namespace, key, version, metadata, owner_scope, value, updated_at, %s)
-	VALUES (?, ?, ?, 1, ?, ?, ?, ?, %s)`, table, columns, placeholders)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, %s) ON CONFLICT (kind, namespace, key) DO NOTHING`, table, columns, placeholders)
 		args = append([]any{record.Kind}, args...)
 	} else {
 		statement = fmt.Sprintf(`INSERT INTO %s
 	(namespace, key, version, metadata, owner_scope, value, updated_at, %s)
-	VALUES (?, ?, 1, ?, ?, ?, ?, %s)`, table, columns, placeholders)
+	VALUES (?, ?, ?, ?, ?, ?, ?, %s) ON CONFLICT (namespace, key) DO NOTHING`, table, columns, placeholders)
 	}
 	for _, value := range queryValues {
 		args = append(args, value)
 	}
-	_, err = s.db.ExecContext(ctx, statement, args...)
+	result, err := s.db.ExecContext(ctx, statement, args...)
 	if err != nil {
-		if _, getErr := s.Get(ctx, record.Kind, record.Namespace, record.Key); getErr == nil {
-			return Record{}, ErrConflict
-		}
 		return Record{}, fmt.Errorf("create libSQL record: %w", err)
+	}
+	// The conflicting row may be deleted immediately by another process.
+	// Use the result of the insert itself to identify the conflict.
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Record{}, fmt.Errorf("read libSQL create result: %w", err)
+	}
+	if affected == 0 {
+		return Record{}, ErrConflict
 	}
 	s.tableLocations.Store(libSQLLocationKey(record.Kind, record.Namespace, record.Key), table)
 	return record, nil
@@ -506,6 +544,9 @@ SELECT '%s' AS table_name, version, metadata, owner_scope, value FROM %s WHERE k
 	statement := fmt.Sprintf(`SELECT version, metadata, owner_scope, value FROM %s WHERE %s`, table, where)
 	err = s.db.QueryRowContext(ctx, statement, args...).Scan(&record.Version, &metadata, &record.OwnerScope, &record.Value)
 	if errors.Is(err, sql.ErrNoRows) {
+		// Another API replica may have removed a cached record. A stale
+		// location would also cause future Create calls to report a conflict.
+		s.tableLocations.CompareAndDelete(locationKey, table)
 		return Record{}, ErrNotFound
 	}
 	if err != nil {
@@ -586,6 +627,9 @@ func (s *LibSQLStore) Scan(ctx context.Context, query ScanQuery) ([]Record, erro
 }
 
 func (s *LibSQLStore) list(ctx context.Context, query Query) ([]Record, error) {
+	if query.Unshared {
+		return s.listOnce(ctx, query)
+	}
 	key := string(query.Kind) + "\x00" + query.Namespace + "\x00" + query.KeyPrefix + "\x00" + query.LabelSelector
 	value, err, _ := s.listGroup.Do(key, func() (any, error) {
 		return s.listOnce(ctx, query)

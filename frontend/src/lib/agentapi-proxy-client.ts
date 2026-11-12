@@ -686,6 +686,20 @@ function parseACPJSONRPCMessages(rawMsgs: ACPJSONRPCMessage[]): SessionMessage[]
 /**
  * AgentAPIProxyClient handles session management and communicates directly with agentapi-proxy.
  */
+export type SessionTaskState = 'QUEUED' | 'CLAIMED' | 'STARTING' | 'SESSION_READY' | 'FAILED' | 'CANCELLED' | 'EXPIRED';
+
+export interface SessionTask {
+  id: string;
+  name: string;
+  state: SessionTaskState;
+  session_id: string | null;
+  reason?: string;
+  updated_at: string;
+  cancel_requested?: boolean;
+}
+
+export type SessionTaskScope = { scope: 'user' | 'team'; team_id?: string };
+
 export class AgentAPIProxyClient {
   private baseURL: string;
   private apiKey?: string;
@@ -1152,6 +1166,41 @@ export class AgentAPIProxyClient {
   /**
    * Search for sessions
    */
+  async listSessionTasks(scope: SessionTaskScope): Promise<SessionTask[]> {
+    const query = this.sessionTaskQuery(scope);
+    query.set('limit', '200');
+    const tasks: SessionTask[] = [];
+    do {
+      const page = await this.makeRequest<{ items: SessionTask[]; next_cursor?: string }>(`/tasks?${query}`);
+      tasks.push(...page.items);
+      if (!page.next_cursor) break;
+      query.set('cursor', page.next_cursor);
+    } while (true);
+    return tasks;
+  }
+
+  async cancelSessionTask(id: string): Promise<SessionTask> {
+    return this.makeRequest(`/tasks/${encodeURIComponent(id)}/cancel`, { method: 'POST' });
+  }
+
+  async retrySessionTask(id: string): Promise<void> {
+    await this.makeRequest(`/tasks/${encodeURIComponent(id)}/retry`, { method: 'POST' });
+  }
+
+  subscribeToSessionTaskChanges(scope: SessionTaskScope, invalidate: () => void): EventSource {
+    const stream = new EventSource(`${this.baseURL}/tasks/stream?${this.sessionTaskQuery(scope)}`);
+    stream.onopen = invalidate;
+    stream.onmessage = invalidate;
+    stream.addEventListener('agentapi_upstream_error', () => stream.close());
+    return stream;
+  }
+
+  private sessionTaskQuery(scope: SessionTaskScope): URLSearchParams {
+    const query = new URLSearchParams({ scope: scope.scope, state: 'queued,claimed,starting,failed,expired' });
+    if (scope.team_id) query.set('team_id', scope.team_id);
+    return query;
+  }
+
   async search(params?: SessionListParams): Promise<SessionListResponse> {
     const searchParams = new URLSearchParams();
     

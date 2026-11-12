@@ -200,6 +200,10 @@ func poolSelector(pools ...string) string {
 }
 
 func (s *Store) listWithSelector(ctx context.Context, resource string, decode func([]byte) error, additionalSelector string) error {
+	return s.listRecords(ctx, resource, decode, additionalSelector, false)
+}
+
+func (s *Store) listRecords(ctx context.Context, resource string, decode func([]byte) error, additionalSelector string, unshared bool) error {
 	selector := labelResource + "=" + resource
 	if additionalSelector != "" {
 		selector += "," + additionalSelector
@@ -209,6 +213,7 @@ func (s *Store) listWithSelector(ctx context.Context, resource string, decode fu
 		Namespace:     s.namespace,
 		KeyPrefix:     resourcePrefix(resource),
 		LabelSelector: selector,
+		Unshared:      unshared,
 	})
 	if err != nil {
 		return err
@@ -579,7 +584,7 @@ func (s *Store) GetAllocation(ctx context.Context, id string) (*core.Allocation,
 
 func (s *Store) ListAllocations(ctx context.Context, pool string) ([]*core.Allocation, error) {
 	var result []*core.Allocation
-	err := s.list(ctx, "allocation", func(raw []byte) error {
+	err := s.listRecords(ctx, "allocation", func(raw []byte) error {
 		var value core.Allocation
 		if err := json.Unmarshal(raw, &value); err != nil {
 			return err
@@ -588,7 +593,7 @@ func (s *Store) ListAllocations(ctx context.Context, pool string) ([]*core.Alloc
 			result = append(result, &value)
 		}
 		return nil
-	}, pool)
+	}, poolSelector(pool), true)
 	return result, err
 }
 

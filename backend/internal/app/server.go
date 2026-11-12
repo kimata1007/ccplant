@@ -46,6 +46,7 @@ import (
 	portrepos "github.com/takutakahashi/agentapi-proxy/internal/usecases/ports/repositories"
 	serviceaccountuc "github.com/takutakahashi/agentapi-proxy/internal/usecases/service_account"
 	sessionuc "github.com/takutakahashi/agentapi-proxy/internal/usecases/session"
+	"github.com/takutakahashi/agentapi-proxy/internal/usecases/task"
 	"github.com/takutakahashi/agentapi-proxy/pkg/auth"
 	"github.com/takutakahashi/agentapi-proxy/pkg/codexauth"
 	"github.com/takutakahashi/agentapi-proxy/pkg/config"
@@ -1441,6 +1442,9 @@ func (s *Server) createSession(ctx context.Context, sessionID string, startReq e
 		return nil, fmt.Errorf("select authorized session route: %w", err)
 	}
 	if route == nil {
+		if startReq.Tags["task_id"] != "" && s.GetConfig().TaskQueue.Enabled {
+			return nil, task.ErrWaitingCapacity
+		}
 		return nil, fmt.Errorf("no authorized and healthy session route is available")
 	}
 	if explicitManagerID != "" && !authorizedRouteContainsManager(route, explicitManagerID) {
@@ -1587,9 +1591,6 @@ func (s *Server) createPoolSession(ctx context.Context, route sessionrunnercore.
 		return nil, fmt.Errorf("authorized session route is required")
 	}
 	pool := route.PoolName()
-	if err := s.checkSessionPoolQuota(ctx, route); err != nil {
-		return nil, err
-	}
 	runReq := s.runRequestForStart(sessionID, startReq, userID, teams)
 	runReq.Pool = pool
 	initialMessage, agentType, sessionTTL, docker := runReq.InitialMessage, runReq.AgentType, runReq.SessionTTL, runReq.Docker
@@ -1635,7 +1636,7 @@ func (s *Server) createPoolSession(ctx context.Context, route sessionrunnercore.
 		}, RuntimeToken: token,
 		RuntimeTokenHash: tokenHash, ProvisionSettings: settingsRaw,
 	}
-	if err := s.sessionRunnerStore.Enqueue(ctx, allocation); err != nil {
+	if err := s.admitPoolAllocation(ctx, route, allocation); err != nil {
 		return nil, fmt.Errorf("enqueue session pool allocation: %w", err)
 	}
 	startedAt := time.Now().UTC()
@@ -1677,6 +1678,23 @@ func (s *Server) applyPoolAutoSuspendPolicy(ctx context.Context, settings *sessi
 	policy := stored.AutoSuspend()
 	settings.Session.AutoSuspendEnabled = &policy.Enabled
 	settings.Session.AutoSuspendMinutes = policy.IdleTimeoutMinutes
+}
+
+// Admission serializes the existing binding quota check and allocation across
+// all API replicas and callers of /start, including interactive sessions.
+func (s *Server) admitPoolAllocation(ctx context.Context, route sessionrunnercore.AuthorizedRoute, allocation *sessionrunnercore.Allocation) error {
+	if route.MaxConcurrent() <= 0 {
+		return s.sessionRunnerStore.Enqueue(ctx, allocation)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	key := kvstore.Record{Kind: kvstore.KindSecret, Namespace: s.namespace, Key: "session-pool-admission/" + route.BindingID()}
+	return kvstore.WithRecordLock(ctx, s.GetApplicationKVStore(), key, func(ctx context.Context) error {
+		if err := s.checkSessionPoolQuota(ctx, route); err != nil {
+			return err
+		}
+		return s.sessionRunnerStore.Enqueue(ctx, allocation)
+	})
 }
 
 func (s *Server) checkSessionPoolQuota(ctx context.Context, route sessionrunnercore.AuthorizedRoute) error {

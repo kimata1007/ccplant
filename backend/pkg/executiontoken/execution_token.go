@@ -15,6 +15,9 @@ import (
 // ExecutionClaims authorizes a schedule, webhook, or SlackBot call to the normal session
 // creation API. It carries identity, not session configuration.
 type ExecutionClaims struct {
+	TaskID          string                 `json:"task_id,omitempty"`
+	TaskWorker      string                 `json:"task_worker,omitempty"`
+	TaskGeneration  int64                  `json:"task_generation,omitempty"`
 	ScheduleID      string                 `json:"schedule_id,omitempty"`
 	SlackBotID      string                 `json:"slackbot_id,omitempty"`
 	WebhookID       string                 `json:"webhook_id,omitempty"`
@@ -62,10 +65,13 @@ func VerifyExecutionToken(secret []byte, token string, now time.Time) (Execution
 		return claims, errors.New("invalid execution token")
 	}
 	origins := 0
-	for _, id := range []string{claims.ScheduleID, claims.SlackBotID, claims.WebhookID} {
+	for _, id := range []string{claims.ScheduleID, claims.SlackBotID, claims.WebhookID, claims.TaskID} {
 		if id != "" {
 			origins++
 		}
+	}
+	if claims.TaskID != "" && (claims.TaskWorker == "" || claims.TaskGeneration <= 0) {
+		return claims, errors.New("incomplete task execution token")
 	}
 	if origins != 1 || claims.ExecutionID == "" || claims.SessionID == "" || claims.UserID == "" || now.Unix() >= claims.ExpiresAt {
 		return claims, errors.New("expired or incomplete execution token")

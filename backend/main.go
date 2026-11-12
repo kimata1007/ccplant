@@ -26,6 +26,7 @@ func init() {
 	rootCmd.AddCommand(cmd.SessionManagerCmd)
 	rootCmd.AddCommand(cmd.HelpersCmd)
 	rootCmd.AddCommand(cmd.ClientCmd)
+	rootCmd.AddCommand(cmd.TaskCommands()...)
 	rootCmd.AddCommand(cmd.AgentProvisionerCmd)
 	rootCmd.AddCommand(cmd.NativeSessionManagerCmd)
 	rootCmd.AddCommand(cmd.NativeCmd)

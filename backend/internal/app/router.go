@@ -16,6 +16,7 @@ import (
 	"github.com/takutakahashi/agentapi-proxy/internal/usecases/personal_api_key"
 	portrepos "github.com/takutakahashi/agentapi-proxy/internal/usecases/ports/repositories"
 	"github.com/takutakahashi/agentapi-proxy/internal/usecases/resource_transfer"
+	"github.com/takutakahashi/agentapi-proxy/internal/usecases/task"
 	"github.com/takutakahashi/agentapi-proxy/pkg/auth"
 	"github.com/takutakahashi/agentapi-proxy/pkg/config"
 	"github.com/takutakahashi/agentapi-proxy/pkg/sessionsettings"
@@ -57,6 +58,7 @@ type HandlerRegistry struct {
 	provisionerController          *controllers.ProvisionerController
 	externalAllocationController   *controllers.ProvisionerController
 	workerControlController        *controllers.WorkerControlController
+	taskController                 *controllers.TaskController
 	sessionControlController       *controllers.SessionControlController
 	sessionControlReaderController *controllers.SessionControlReaderController
 	esmControlController           *controllers.ESMControlController
@@ -289,6 +291,14 @@ func NewRouter(e *echo.Echo, server *Server) *Router {
 	var provisionerController *controllers.ProvisionerController
 	var externalAllocationController *controllers.ProvisionerController
 	var workerControlController *controllers.WorkerControlController
+	var taskController *controllers.TaskController
+	if cfg := server.GetConfig(); cfg != nil && cfg.TaskQueue.Enabled && cfg.Worker.ExecutionTokenSigningKey != "" && cfg.Worker.ControlAPIToken != "" {
+		queue := &task.Queue{Repo: repositories.NewTaskRepository(server.GetApplicationKVStore(), server.namespace), Sessions: server.taskSessionSnapshot, RecoverAllocation: server.recoverTaskAllocation}
+		queue.Metrics = task.NewMetrics(queue.Repo)
+		taskController = &controllers.TaskController{Queue: queue, SigningKey: cfg.Worker.ExecutionTokenSigningKey}
+		sessionController.SetTaskQueue(queue)
+	}
+
 	var sessionControlController *controllers.SessionControlController
 	var sessionControlReaderController *controllers.SessionControlReaderController
 	var esmControlController *controllers.ESMControlController
@@ -393,6 +403,7 @@ func NewRouter(e *echo.Echo, server *Server) *Router {
 			provisionerController:          provisionerController,
 			externalAllocationController:   externalAllocationController,
 			workerControlController:        workerControlController,
+			taskController:                 taskController,
 			sessionControlController:       sessionControlController,
 			sessionControlReaderController: sessionControlReaderController,
 			esmControlController:           esmControlController,
@@ -465,6 +476,16 @@ func (r *Router) registerCoreRoutes() error {
 	// Session management routes
 	log.Printf("[ROUTES] Registering session management endpoints...")
 	r.echo.POST("/start", r.handlers.sessionController.StartSession)
+	if tc := r.handlers.taskController; tc != nil {
+		read := auth.RequirePermission(entities.PermissionSessionRead, r.server.container.AuthService)
+		create := auth.RequirePermission(entities.PermissionSessionCreate, r.server.container.AuthService)
+		r.echo.POST("/tasks", tc.Submit, create)
+		r.echo.GET("/tasks", tc.List, read)
+		r.echo.GET("/tasks/stream", tc.Stream, read)
+		r.echo.GET("/tasks/:id", tc.Show, read)
+		r.echo.POST("/tasks/:id/cancel", tc.Cancel, create)
+		r.echo.POST("/tasks/:id/retry", tc.Retry, create)
+	}
 	r.echo.GET("/search", r.handlers.sessionController.SearchSessions)
 	if r.handlers.usageController != nil {
 		r.echo.POST("/internal/usage-events", r.handlers.usageController.Create,
@@ -571,6 +592,17 @@ func (r *Router) registerCoreRoutes() error {
 		worker.POST("/stock", r.handlers.workerControlController.Stock)
 		worker.DELETE("/stock", r.handlers.workerControlController.Stock)
 		worker.POST("/leases/:leaseName", r.handlers.workerControlController.Lease)
+		if tc := r.handlers.taskController; tc != nil {
+			worker.POST("/tasks/claim-due", tc.Claim)
+			worker.POST("/tasks/:id/heartbeat", tc.Heartbeat)
+			worker.POST("/tasks/:id/finalize", tc.Finalize)
+			worker.POST("/tasks/prune", func(ctx echo.Context) error {
+				if err := tc.Queue.Prune(ctx.Request().Context()); err != nil {
+					return echo.NewHTTPError(http.StatusServiceUnavailable, "task retention cleanup failed").SetInternal(err)
+				}
+				return ctx.NoContent(http.StatusNoContent)
+			})
+		}
 		worker.POST("/schedules/claim-due", r.handlers.workerControlController.ClaimDueSchedules)
 		worker.POST("/schedules/:id/finalize", r.handlers.workerControlController.FinalizeSchedule)
 		worker.GET("/slackbots", r.handlers.workerControlController.ListSlackBots)

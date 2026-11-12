@@ -47,6 +47,9 @@ func runWorkers(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	if err := cfg.ValidateTaskQueue(); err != nil {
+		return err
+	}
 	if workerVerbose {
 		log.SetFlags(log.LstdFlags | log.Lshortfile)
 	}
@@ -84,6 +87,13 @@ func runWorkers(_ *cobra.Command, _ []string) error {
 	controlFailure := monitorWorkerControlAPI(ctx, slackRepo, 30*time.Second, 4)
 	var mu sync.Mutex
 	var workers sync.WaitGroup
+	if cfg.TaskQueue.Enabled {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			runTaskWorker(ctx, remote)
+		}()
+	}
 	var scheduleWorker *remoteScheduleWorker
 	var cleanupWorker *slackbotcleanup.LeaderCleanupWorker
 	if cfg.ScheduleWorker.Enabled {

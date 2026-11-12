@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"sync"
 	"testing"
 
 	sessionrunnercore "github.com/takutakahashi/agentapi-proxy/internal/core/sessionrunner"
@@ -85,5 +87,53 @@ func TestAllocationCountsTowardQuota(t *testing.T) {
 		if allocationCountsTowardQuota(status) {
 			t.Errorf("status %q should not count toward quota", status)
 		}
+	}
+}
+
+func TestConcurrentStartsShareSessionPoolQuota(t *testing.T) {
+	ctx := t.Context()
+	database := "file:" + filepath.Join(t.TempDir(), "shared-quota.db")
+	var servers []*Server
+	for i := 0; i < 2; i++ {
+		kv, err := kvstore.NewLibSQLStore(ctx, database, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = kv.Close() })
+		servers = append(servers, &Server{kvStore: kv, namespace: "test", sessionRunnerStore: infrasessionrunner.NewStore(kv, "test")})
+	}
+	binding := &sessionrunnercore.Binding{ID: "shared", Pool: "linux", SubjectType: sessionrunnercore.SubjectUser, SubjectID: "alice", Enabled: true, MaxConcurrent: 1}
+	route := testAuthorizedRoute(t, "linux", binding)
+	ids := []string{"interactive-session", "queued-task-session"}
+	results := make([]error, len(ids))
+	var workers sync.WaitGroup
+	for i, id := range ids {
+		workers.Go(func() {
+			allocation := &sessionrunnercore.Allocation{SessionID: id, Pool: route.PoolName(), BindingID: route.BindingID()}
+			results[i] = servers[i].admitPoolAllocation(ctx, route, allocation)
+		})
+	}
+	workers.Wait()
+	winner, waiting := -1, -1
+	for i, err := range results {
+		var quotaErr *sessionrunnercore.QuotaExceededError
+		switch {
+		case err == nil:
+			winner = i
+		case errors.As(err, &quotaErr):
+			waiting = i
+		default:
+			t.Fatal(err)
+		}
+	}
+	if winner < 0 || waiting < 0 {
+		t.Fatalf("expected one admitted start and one waiting start, got %v", results)
+	}
+	if err := servers[winner].DeleteSessionPoolAllocation(ctx, ids[winner]); err != nil {
+		t.Fatal(err)
+	}
+	allocation := &sessionrunnercore.Allocation{SessionID: ids[waiting], Pool: route.PoolName(), BindingID: route.BindingID()}
+	if err := servers[waiting].admitPoolAllocation(ctx, route, allocation); err != nil {
+		t.Fatalf("waiting session should be admitted after a slot opens: %v", err)
 	}
 }

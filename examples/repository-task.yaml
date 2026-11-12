@@ -1,0 +1,15 @@
+apiVersion: ccplant.io/v1alpha1
+kind: Task
+metadata:
+  name: Review repository
+spec:
+  start:
+    scope: user
+    session_profile_id: replace-with-your-profile-id
+    tags:
+      repository: kimata1007/ccplant
+    params:
+      message: Review the repository and summarize its entry points.
+  queue:
+    priority: 0
+    max_wait: 24h

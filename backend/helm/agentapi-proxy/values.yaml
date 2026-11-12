@@ -240,6 +240,10 @@ cloudRun:
 # Deprecated API aliases retained for upgrades using older values files.
 replicaCount: 1
 
+# Opt in on the API and background worker together.
+taskQueue:
+  enabled: false
+
 # Background controllers run in a dedicated process. Workload settings and
 # controller settings intentionally live under this key rather than the proxy.
 worker:

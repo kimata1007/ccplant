@@ -15,6 +15,331 @@
     }
   ],
   "paths": {
+    "/tasks": {
+      "post": {
+        "summary": "Submit a durable task",
+        "operationId": "submitTask",
+        "tags": [
+          "Tasks"
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 256
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskSpec"
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Invalid task definition"
+          },
+          "422": {
+            "description": "Unsupported environment override"
+          },
+          "202": {
+            "description": "Persisted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSubmission"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Scope is not permitted"
+          },
+          "409": {
+            "description": "Idempotency conflict"
+          },
+          "503": {
+            "description": "Task queue unavailable"
+          }
+        }
+      },
+      "get": {
+        "summary": "List tasks in authorized scopes",
+        "operationId": "listTasks",
+        "tags": [
+          "Tasks"
+        ],
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "user",
+                "team"
+              ]
+            }
+          },
+          {
+            "name": "team_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/TaskRecord"
+                      }
+                    },
+                    "next_cursor": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Scope is not permitted"
+          },
+          "503": {
+            "description": "Task queue unavailable"
+          }
+        }
+      }
+    },
+    "/tasks/stream": {
+      "get": {
+        "summary": "Stream task change hints; re-fetch the list on connect",
+        "operationId": "streamTaskChanges",
+        "tags": [
+          "Tasks"
+        ],
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "user",
+                "team"
+              ]
+            }
+          },
+          {
+            "name": "team_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE notifications",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Task queue unavailable"
+          }
+        }
+      }
+    },
+    "/tasks/{id}": {
+      "get": {
+        "summary": "Read a task",
+        "operationId": "showTask",
+        "tags": [
+          "Tasks"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskRecord"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Task not found"
+          },
+          "503": {
+            "description": "Task queue unavailable"
+          }
+        }
+      }
+    },
+    "/tasks/{id}/cancel": {
+      "post": {
+        "summary": "Cancel pending task startup",
+        "operationId": "cancelTask",
+        "tags": [
+          "Tasks"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskRecord"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Task not found"
+          },
+          "409": {
+            "description": "Task is not pending"
+          }
+        }
+      }
+    },
+    "/tasks/{id}/retry": {
+      "post": {
+        "summary": "Submit a new task from a terminal task",
+        "operationId": "retryTask",
+        "tags": [
+          "Tasks"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 256
+            }
+          }
+        ],
+        "responses": {
+          "404": {
+            "description": "Task not found"
+          },
+          "202": {
+            "description": "Persisted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSubmission"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Scope is not permitted"
+          },
+          "409": {
+            "description": "Idempotency conflict"
+          },
+          "503": {
+            "description": "Task queue unavailable"
+          }
+        }
+      }
+    },
     "/teams": {
       "get": {
         "summary": "List accessible ccplant teams",
@@ -7558,6 +7883,265 @@
   },
   "components": {
     "schemas": {
+      "TaskSpec": {
+        "type": "object",
+        "properties": {
+          "apiVersion": {
+            "type": "string",
+            "enum": [
+              "ccplant.io/v1alpha1"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "Task"
+            ]
+          },
+          "metadata": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          },
+          "spec": {
+            "type": "object",
+            "properties": {
+              "start": {
+                "type": "object",
+                "properties": {
+                  "scope": {
+                    "type": "string",
+                    "enum": [
+                      "user",
+                      "team"
+                    ],
+                    "default": "user"
+                  },
+                  "team_id": {
+                    "type": "string"
+                  },
+                  "session_profile_id": {
+                    "type": "string"
+                  },
+                  "workspace_id": {
+                    "type": "string"
+                  },
+                  "tags": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string",
+                      "maxLength": 512
+                    },
+                    "maxProperties": 32
+                  },
+                  "environment": {
+                    "type": "object",
+                    "properties": {
+                      "TZ": {
+                        "type": "string"
+                      },
+                      "LANG": {
+                        "type": "string"
+                      },
+                      "LC_ALL": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "params": {
+                    "type": "object",
+                    "properties": {
+                      "message": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 131072
+                      },
+                      "pool": {
+                        "type": "string"
+                      },
+                      "manager_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "message"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "session_profile_id",
+                  "params"
+                ],
+                "additionalProperties": false
+              },
+              "queue": {
+                "type": "object",
+                "properties": {
+                  "priority": {
+                    "type": "integer",
+                    "minimum": -10,
+                    "maximum": 10,
+                    "default": 0
+                  },
+                  "max_wait": {
+                    "type": "string",
+                    "default": "24h"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "start"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "apiVersion",
+          "kind",
+          "metadata",
+          "spec"
+        ],
+        "additionalProperties": false
+      },
+      "TaskSubmission": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "CLAIMED",
+              "STARTING",
+              "SESSION_READY",
+              "FAILED",
+              "CANCELLED",
+              "EXPIRED"
+            ]
+          },
+          "session_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "retry_of": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "state",
+          "session_id"
+        ]
+      },
+      "TaskRecord": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner_user_id": {
+            "type": "string"
+          },
+          "team_id": {
+            "type": "string"
+          },
+          "retry_of": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "claimed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finished_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "attempt": {
+            "type": "integer"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "user",
+              "team"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "CLAIMED",
+              "STARTING",
+              "SESSION_READY",
+              "FAILED",
+              "CANCELLED",
+              "EXPIRED"
+            ]
+          },
+          "session_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "cancel_requested": {
+            "type": "boolean"
+          },
+          "session_missing": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "state",
+          "scope",
+          "session_id",
+          "seq",
+          "updated_at"
+        ]
+      },
       "SecretProjection": {
         "type":"object","required":["key","type"],"properties":{"key":{"type":"string"},"type":{"type":"string","enum":["env","file"]},"env_name":{"type":"string"},"path":{"type":"string"},"permissions":{"type":"string","enum":["0400","0600"]}}
       },
