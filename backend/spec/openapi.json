@@ -7980,7 +7980,6 @@
                   }
                 },
                 "required": [
-                  "session_profile_id",
                   "params"
                 ],
                 "additionalProperties": false

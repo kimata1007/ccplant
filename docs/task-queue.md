@@ -7,9 +7,10 @@ agent can continue processing the first message or accept additional messages.
 ## Submit and attach
 
 Set `AGENTAPI_PROXY_ENDPOINT` to the API base URL and `AGENTAPI_KEY` to your
-existing user or team API credential. Copy [the example](../examples/repository-task.yaml)
-and set `session_profile_id` to an accessible profile with the repository,
-runtime, and credentials you need.
+existing user or team API credential. Copy [the example](../examples/repository-task.yaml).
+`session_profile_id` is optional. Set it to an accessible profile with the
+repository, runtime, and credentials you need, or omit it to start the Session
+the same way as `POST /start`: the default profile applies when one exists.
 
 ```sh
 ccplant submit repository-task.yaml --idempotency-key review-001

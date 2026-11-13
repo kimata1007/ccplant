@@ -5,7 +5,8 @@ metadata:
 spec:
   start:
     scope: user
-    session_profile_id: replace-with-your-profile-id
+    # Optional. Omit it to use your default session profile, if any.
+    # session_profile_id: replace-with-your-profile-id
     tags:
       repository: kimata1007/ccplant
     params:

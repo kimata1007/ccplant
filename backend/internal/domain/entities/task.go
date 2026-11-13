@@ -54,10 +54,13 @@ type TaskSpec struct {
 	} `json:"spec" yaml:"spec"`
 }
 
+// TaskStart mirrors the persisted subset of StartRequest. SessionProfileID is
+// optional: when empty, session start resolves the user's or team's default
+// profile, the same as POST /start.
 type TaskStart struct {
 	Scope            ResourceScope     `json:"scope,omitempty" yaml:"scope,omitempty"`
 	TeamID           string            `json:"team_id,omitempty" yaml:"team_id,omitempty"`
-	SessionProfileID string            `json:"session_profile_id" yaml:"session_profile_id"`
+	SessionProfileID string            `json:"session_profile_id,omitempty" yaml:"session_profile_id,omitempty"`
 	WorkspaceID      string            `json:"workspace_id,omitempty" yaml:"workspace_id,omitempty"`
 	Tags             map[string]string `json:"tags,omitempty" yaml:"tags,omitempty"`
 	Environment      map[string]string `json:"environment,omitempty" yaml:"environment,omitempty"`
@@ -127,8 +130,9 @@ func (s *TaskSpec) Validate() error {
 	if (start.Scope != ScopeUser && start.Scope != ScopeTeam) || (start.Scope == ScopeUser && start.TeamID != "") {
 		return errors.New("invalid task scope or team_id")
 	}
-	if strings.TrimSpace(start.SessionProfileID) == "" || strings.TrimSpace(start.Params.Message) == "" || len(start.Params.Message) > 128<<10 {
-		return errors.New("session_profile_id and an initial message of at most 128 KiB are required")
+	start.SessionProfileID = strings.TrimSpace(start.SessionProfileID)
+	if strings.TrimSpace(start.Params.Message) == "" || len(start.Params.Message) > 128<<10 {
+		return errors.New("an initial message of at most 128 KiB is required")
 	}
 	for _, field := range []string{start.TeamID, start.SessionProfileID, start.WorkspaceID, start.Params.ManagerID, start.Params.Pool} {
 		if len(field) > 256 {
