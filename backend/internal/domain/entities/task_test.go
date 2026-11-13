@@ -22,6 +22,9 @@ spec:
 		want       error
 	}{
 		{name: "valid", body: base},
+		{name: "without profile", body: strings.Replace(base, "    session_profile_id: default\n", "", 1)},
+		{name: "blank profile", body: strings.Replace(base, "session_profile_id: default", `session_profile_id: "  "`, 1)},
+		{name: "blank message", body: strings.Replace(base, "message: hello", `message: " "`, 1), want: errors.New("invalid")},
 		{name: "unknown", body: strings.Replace(base, "    params:", "    reuse_message: hello\n    params:", 1), want: errors.New("invalid")},
 		{name: "numeric message", body: strings.Replace(base, "message: hello", "message: 42", 1), want: errors.New("invalid")},
 		{name: "multiple docs", body: base + "---\n" + base, want: errors.New("invalid")},
